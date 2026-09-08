@@ -1,0 +1,27 @@
+# Credentials and private local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+# Runtime, account state and downloaded market data
+*.db
+*.db-*
+*.sqlite*
+*.log
+.paper_service.lock
+**/data/
+recovery-*/
+**/recovery-*/
+.github-upload-check
+storage-check.txt
+.storage-write-check
+# Dependencies and generated build/test output
+.venv/
+node_modules/
+__pycache__/
+*.pyc
+.pytest_cache/
+dist/
+.coverage
+htmlcov/

@@ -1,0 +1,1 @@
+{"name":"trading-bot-ui","private":true,"version":"1.0.0","type":"module","scripts":{"dev":"vite","build":"tsc && vite build"},"dependencies":{"@vitejs/plugin-react":"latest","react":"^18.3.1","react-dom":"^18.3.1","typescript":"latest","vite":"latest"},"devDependencies":{"@types/react":"^19.2.18","@types/react-dom":"^19.2.7"}}
