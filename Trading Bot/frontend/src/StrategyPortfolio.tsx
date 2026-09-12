@@ -15,6 +15,7 @@ export default function StrategyPortfolio({ data }: { data?: Data }) {
     {!!data.offers?.length && <><h3>Eligible opportunities</h3><div className="table-wrap"><table><thead><tr><th>Rank</th><th>Strategy / index</th><th>All-in stop risk</th><th>Net reward at target</th><th>Reward / risk</th><th>Evidence</th></tr></thead><tbody>
       {data.offers.map((o: Data, i: number) => <tr key={`${o.signal_id}:${o.contract_id}`}><td>{i+1}</td><td>{o.strategy} · {o.symbol}</td><td>{rupees(o.risk)}</td><td>{rupees(o.net_reward_at_target)}</td><td>{o.net_reward_risk.toFixed(2)}</td><td>{o.evidence} · {o.samples} outcomes</td></tr>)}
     </tbody></table></div></>}
+    {!!data.offers?.length && <div>{data.offers.map((o: Data) => <p key={`ml:${o.signal_id}:${o.contract_id}`}>{o.strategy} · {o.symbol}: {o.ml_quality?.probability == null ? "No validated ML probability available" : `Estimated positive-net-exit probability ${(o.ml_quality.probability * 100).toFixed(1)}% · ${o.ml_quality.status}`} · {o.exit_policy}</p>)}</div>}
     <h3>Executed paper performance</h3>
     <div className="table-wrap"><table><thead><tr><th>Strategy</th><th>Closed positions</th><th>Wins / losses</th><th>Net P&amp;L</th><th>Estimated costs</th><th>Evidence</th></tr></thead><tbody>
       {(data.performance || []).map((s: Data) => <tr key={s.id}><td>{s.name}</td><td>{s.closed_trades}</td><td>{s.wins} / {s.losses}</td><td>{rupees(s.net_pnl)}</td><td>{rupees(s.estimated_costs)}</td><td>Unvalidated paper</td></tr>)}

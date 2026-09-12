@@ -12,6 +12,8 @@ from .pipeline import plan_protection, execution_context
 from .expectancy import ExpectancyEngine
 from .session import now_ist, quote_is_fresh
 from .telemetry.decision_trace import event
+from .ai import LearningService, extract_features
+from .adaptive_exit import VERSION as ADAPTIVE_EXIT_VERSION
 
 
 class MultiStrategyPaperEngine(PaperEngine):
@@ -19,6 +21,8 @@ class MultiStrategyPaperEngine(PaperEngine):
         super().__init__(*args,**kwargs)
         self.protection_requests={}; self.protection_results={}
         self.audit_keys={}; self.entry_wakeup=threading.Event()
+        self.learning=LearningService(self.store)
+        self.ml_frozen={}
         self.status["portfolio"]={"version":PORTFOLIO_VERSION,"strategies":list(STRATEGIES),
             "evidence":"UNVALIDATED_PAPER","evaluations":[],"offers":[],"selected":None,
             "reason":"Waiting for session","selection_rule":"Supported net evidence first; then net target reward / all-in risk and spread. No profit probability is claimed."}
@@ -35,6 +39,8 @@ class MultiStrategyPaperEngine(PaperEngine):
                 "frozen_at":now.isoformat(),"validation":"UNVALIDATED_PAPER"}
             self.store.put_record("session_models",key,frozen)
         self.pipeline.policies={}; self.policy_day=day; self.status["frozen_model"]=frozen
+        self.ml_frozen=self.learning.freeze(now)
+        self.status["ml_session"]=self.ml_frozen
         with self.lock: self.protection_requests.clear(); self.protection_results.clear()
 
     def start(self):
@@ -113,6 +119,9 @@ class MultiStrategyPaperEngine(PaperEngine):
             matches=bars[bars.timestamp==stamp]
             if len(matches)!=1: raise ValueError("Provider has not returned the exact selected-contract protection minute")
             candle=matches.iloc[0].to_dict()
+            from .indicators import atr
+            history=bars[bars.timestamp<=stamp].sort_values("timestamp")
+            candle["option_atr"]=float(atr(history).iloc[-1]) if len(history)>=14 else None
             if not all(math.isfinite(float(candle[k])) and float(candle[k])>0 for k in ("open","high","low","close")):
                 raise ValueError("Invalid protection OHLC")
             if candle["low"]>min(candle["open"],candle["close"]) or candle["high"]<max(candle["open"],candle["close"]):
@@ -169,6 +178,13 @@ class MultiStrategyPaperEngine(PaperEngine):
         candle,reason=self._request_protection(signal,contract)
         if candle is None: return None,reason
         s=plan_protection(signal,contract,candle,contract["ask"],horizon_minutes=signal["horizon_minutes"])
+        s.update(exit_policy=ADAPTIVE_EXIT_VERSION,option_atr=candle.get("option_atr"))
+        s["entry_features"]=extract_features(signal.get("feature_row",{}),s,contract,now)
+        quality=self.learning.score(s,self.ml_frozen)
+        s["ml_quality"]=quality
+        if not quality["allowed"]:
+            probability=quality.get("probability")
+            return None,(f"ML Quality Gate: {probability:.1%} below {quality['threshold']:.1%}" if probability is not None else "ML Quality Gate: "+quality["status"])
         qty=contract["lot_size"]; price=contract["ask"]
         stop_cost=self.broker.cost.quote(contract,price,s["stop_price"],qty)["total"]
         target_cost=self.broker.cost.quote(contract,price,s["target_price"],qty)["total"]
@@ -267,7 +283,8 @@ class MultiStrategyPaperEngine(PaperEngine):
     def _offer_view(o):
         return {"signal_id":o["signal"]["id"],"strategy":o["signal"]["strategy_name"],"symbol":o["signal"]["symbol"],
             "contract_id":o["contract"]["contract_id"],"risk":o["risk"],"net_reward_at_target":o["net_reward"],
-            "net_reward_risk":o["net_reward_risk"],"evidence":o["ev"]["status"],"samples":o["ev"].get("samples",0)}
+            "net_reward_risk":o["net_reward_risk"],"evidence":o["ev"]["status"],"samples":o["ev"].get("samples",0),
+            "ml_quality":o["signal"].get("ml_quality"),"exit_policy":o["signal"].get("exit_policy")}
 
     def _execute_offer(self,offer):
         now=now_ist(); s=offer["signal"]; c=offer["contract"]

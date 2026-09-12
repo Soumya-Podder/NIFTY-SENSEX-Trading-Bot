@@ -91,6 +91,8 @@ class PaperBroker:
                 if not p["stale"] and q.get("bid",0)>0:
                     p["mark"]=float(q["bid"]); p["mark_timestamp"]=q["timestamp"]
                     p["executable_quantity"]=q.get("bid_qty",0)
+                    from .adaptive_exit import update_exit
+                    update_exit(p, p["mark"], now or self.clock(), q.get("exit_cost_estimate"))
                     if self.policy: p["exit_cost_estimate"]=q.get("exit_cost_estimate")
                     move=(p["mark"]-p["entry"])*p["qty"]
                     p["mae"]=min(p.get("mae",0),move); p["mfe"]=max(p.get("mfe",0),move)
@@ -110,7 +112,8 @@ class PaperBroker:
                 if snap["liquidation_pnl"]<=-self.policy.loss_allocation: reason="DAILY_FLATTEN"
                 elif snap["liquidation_equity"]-self.state["liquidation_peak"]<=-self.policy.max_drawdown: reason="DRAWDOWN_PAUSE"
                 elif week_pnl<=-self.policy.weekly_loss: reason="WEEKLY_LOSS_PAUSE"
-                elif snap["gross_session_pnl"]>=self.policy.gross_target: reason="GROSS_PROFIT_LOCK"
+                elif self.policy.target_reached(snap["gross_session_pnl"], snap["liquidation_pnl"]):
+                    reason="NET_PROFIT_LOCK" if self.policy.target_basis == "net" else "GROSS_PROFIT_LOCK"
                 if reason and not ledger.get("lock_reason"): ledger["lock_reason"]=reason; self.state.update(halted=True,halt_reason=reason)
             self._persist()
 
@@ -168,6 +171,8 @@ class PaperBroker:
                 p.update({k:signal.get(k) for k in ("invalidation","horizon_minutes","exit_policy","protection_evidence","strategy_version")})
                 p["evidence_mode"]=signal.get("evidence_mode","paper_observation")
                 p.update({k:signal.get(k) for k in ("strategy_id","strategy_name","portfolio_version","underlying_target","selection_evidence")})
+                p.update({k:signal.get(k) for k in ("entry_features","ml_quality","option_atr")})
+                p["initial_stop"]=p["stop"]
             order={"id":identifier,"side":"BUY","status":"FILLED","price":price,"quantity":quantity,
                    "contract_id":p["contract_id"],"timestamp":now.isoformat(),"charges":fee,
                    "fill_model":"observed_ask_full_depth","mode":"paper"}

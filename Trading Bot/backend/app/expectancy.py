@@ -78,6 +78,20 @@ class CostModel:
         result.update(source=schedule["source"],as_of=day,kind="dated_schedule",quantity=qty)
         return result
 
+    @staticmethod
+    def estimate_round_trip(buy_price, sell_price, qty):
+        """Standard Dhan index option round-trip charges (₹40 brokerage + STT + turnover + GST + stamp duty)."""
+        buy_turnover = float(buy_price) * qty
+        sell_turnover = float(sell_price) * qty
+        turnover = buy_turnover + sell_turnover
+        brokerage = 40.0
+        stt = round(sell_turnover * 0.001, 2)
+        exchange = round(turnover * 0.0005, 2)
+        sebi = round(turnover * 0.000001, 2)
+        stamp_duty = round(buy_turnover * 0.00003, 2)
+        gst = round((brokerage + exchange + sebi) * 0.18, 2)
+        return round(brokerage + stt + exchange + sebi + stamp_duty + gst, 2)
+
 
 class ExpectancyEngine:
     def evaluate_net(self,outcomes,min_samples=30,min_days=10):

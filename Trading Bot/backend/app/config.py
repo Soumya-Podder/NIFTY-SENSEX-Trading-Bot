@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     max_spread_pct: float = Field(default=.03,gt=0,lt=1,allow_inf_nan=False)
     max_correlated_risk_rupees: float = Field(default=300,gt=0,allow_inf_nan=False)
     daily_profit_target: float = Field(default=1200,gt=0,allow_inf_nan=False)
+    daily_profit_target_basis: Literal["gross", "net"] = "gross"
     learning_min_train_trades: int = 60
     learning_min_context_trades: int = Field(default=20,gt=0)
     learning_min_validation_trades: int = 30
@@ -55,6 +56,13 @@ class Settings(BaseSettings):
     exit_cooldown_minutes: int = Field(default=5,ge=0)
     weekly_loss_pause_rupees: float = Field(default=1700,gt=0,allow_inf_nan=False)
     drawdown_pause_rupees: float = Field(default=2550,gt=0,allow_inf_nan=False)
+
+    # LLM Integration (OpenRouter)
+    openrouter_api_key: str = Field(default="", description="OpenRouter API key for LLM integration")
+    openrouter_model: str = Field(default="nvidia/nemotron-3-ultra-550b-a55b:free")
+    llm_enabled: bool = Field(default=False)
+    llm_timeout_seconds: int = Field(default=30, ge=5, le=120)
+    llm_max_retries: int = Field(default=2, ge=0, le=5)
 
     model_config = SettingsConfigDict(env_file=(str(PROJECT_ENV), ".env"), extra="ignore")
 

@@ -7,3 +7,7 @@ numpy>=2.1,<3
 python-dotenv>=1,<2
 dhanhq>=2.1,<4
 pytest>=8,<9
+scikit-learn>=1.5,<2
+joblib>=1.4,<2
+httpx>=0.27,<1
+openai-agents==0.22.2

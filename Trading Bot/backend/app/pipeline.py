@@ -18,9 +18,9 @@ def finite(value):
     except (TypeError,ValueError): return False
 
 
-def plan_protection(signal, contract, retest_quote, entry_price, reward_multiple=2., horizon_minutes=10):
+def plan_protection(signal, contract, retest_quote, entry_price, reward_multiple=2., horizon_minutes=10, min_stop=0.):
     """Freeze an observed option-structure stop, never adjust it to fit risk."""
-    if reward_multiple < 2 or horizon_minutes not in (3, 5, 10, 20):
+    if reward_multiple < 2 or horizon_minutes not in (3, 5, 10, 20, 30, 45, 60):
         raise ValueError("Unsupported frozen protection configuration")
     if not retest_quote or retest_quote.get("contract_id") != contract.get("contract_id"):
         raise ValueError("Selected contract retest candle is unavailable")
@@ -31,10 +31,21 @@ def plan_protection(signal, contract, retest_quote, entry_price, reward_multiple
     low = retest_quote.get("low")
     if not all(finite(v) and v > 0 for v in (tick, low, entry_price)):
         raise ValueError("Invalid observed protection inputs")
-    stop = round(math.floor((low - tick + 1e-10) / tick) * tick, 8)
-    if not 0 < stop < entry_price:
-        raise ValueError("Structural option stop is not below the proposed entry")
-    target = round(math.ceil((entry_price + reward_multiple * (entry_price - stop) - 1e-10) / tick) * tick, 8)
+    if min_stop > 0:
+        lot = int(contract.get("lot_size", 50))
+        raw_dist = entry_price - (low - tick) if low < entry_price else 0.
+        structural_dist = max(raw_dist, min_stop)
+        max_stop_dist = 500.0 / lot
+        stop_dist = min(structural_dist, max_stop_dist)
+        stop = round(math.floor((entry_price - stop_dist + 1e-10) / tick) * tick, 8)
+        if not 0 < stop < entry_price:
+            raise ValueError("Structural option stop is not below the proposed entry")
+        target = round(math.ceil((entry_price + reward_multiple * stop_dist - 1e-10) / tick) * tick, 8)
+    else:
+        stop = round(math.floor((low - tick + 1e-10) / tick) * tick, 8)
+        if not 0 < stop < entry_price:
+            raise ValueError("Structural option stop is not below the proposed entry")
+        target = round(math.ceil((entry_price + reward_multiple * (entry_price - stop) - 1e-10) / tick) * tick, 8)
     return {**signal, "stop_price": stop, "target_price": target,
             "stop_percent": (entry_price - stop) / entry_price,
             "target_percent": (target - entry_price) / entry_price,
@@ -42,7 +53,7 @@ def plan_protection(signal, contract, retest_quote, entry_price, reward_multiple
             "protection_evidence": {"contract_id": contract["contract_id"],
                                     "retest_timestamp": signal["retest_timestamp"],
                                     "observed_low": low, "tick_size": tick,
-                                    "reward_multiple": reward_multiple}}
+                                    "reward_multiple": reward_multiple, "min_stop": min_stop}}
 
 
 def plan_exit(position, now, *, bid=None, underlying=None, halted=False, close_start="15:05"):
@@ -50,10 +61,13 @@ def plan_exit(position, now, *, bid=None, underlying=None, halted=False, close_s
     if halted: return "RISK_HALT"
     if finite(bid) and bid > 0 and bid <= position["stop"]: return "STOP"
     invalidation = position.get("invalidation")
+    buf = float(position.get("invalidation_buffer") or 0.0)
     if finite(underlying) and finite(invalidation):
-        if (underlying <= invalidation if position["option_type"] == "CALL" else underlying >= invalidation):
+        cutoff = invalidation - buf if position["option_type"] == "CALL" else invalidation + buf
+        if (underlying <= cutoff if position["option_type"] == "CALL" else underlying >= cutoff):
             return "STRUCTURAL_FAILURE"
     if local_time(now).strftime("%H:%M") >= close_start: return "SESSION_EXIT"
+    if position.get("adaptive_exit_request"): return position["adaptive_exit_request"]
     underlying_target=position.get("underlying_target")
     if finite(underlying) and finite(underlying_target):
         if underlying>=underlying_target if position["option_type"]=="CALL" else underlying<=underlying_target:

@@ -11,9 +11,8 @@ class Store:
     def __init__(self, path="trading_bot.db"):
         self.path = str(path)
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.path) as c:
+        with self._conn() as c:
             c.execute("PRAGMA journal_mode=WAL")
-            c.execute("PRAGMA busy_timeout=10000")
             c.execute("CREATE TABLE IF NOT EXISTS records(namespace TEXT NOT NULL,key TEXT NOT NULL,payload TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(namespace,key))")
             c.execute("CREATE TABLE IF NOT EXISTS history_cache(key TEXT PRIMARY KEY,payload BLOB NOT NULL,expires_at REAL NOT NULL)")
             c.execute("CREATE TABLE IF NOT EXISTS history_ranges(key TEXT PRIMARY KEY,family TEXT NOT NULL,start TEXT NOT NULL,end TEXT NOT NULL,fields TEXT NOT NULL)")
@@ -49,13 +48,18 @@ class Store:
                 metadata_json TEXT NOT NULL
             )""")
 
+    def _conn(self, timeout=30):
+        c = sqlite3.connect(self.path, timeout=timeout)
+        c.execute("PRAGMA busy_timeout=30000")
+        return c
+
     def save_decision(self, p):
-        with sqlite3.connect(self.path) as c:
+        with self._conn() as c:
             c.execute("INSERT INTO decisions(ts,strategy_id,regime,setup_id,direction,decision,rejection_reason,payload_json) VALUES(?,?,?,?,?,?,?,?)",
                       (p["timestamp"], p["strategy_id"], p["regime"]["regime"], p["setup"]["setup_id"], p["setup"]["direction"], p["decision"], p.get("rejection_reason"), json.dumps(p)))
 
     def active_learning_policies(self):
-        with sqlite3.connect(self.path) as c:
+        with self._conn() as c:
             rows = c.execute("SELECT agent, version, policy_json FROM learning_policies").fetchall()
         policies = {}
         for agent, version, payload in rows:
@@ -75,7 +79,7 @@ class Store:
         return policies
 
     def record_learning(self, entries, promotions):
-        with sqlite3.connect(self.path) as c:
+        with self._conn() as c:
             for entry in entries:
                 c.execute("""INSERT INTO learning_ledger(
                     run_id, recorded_at, source, agent, policy_before, policy_after,
@@ -101,7 +105,7 @@ class Store:
                 ))
 
     def learning_snapshot(self):
-        with sqlite3.connect(self.path) as c:
+        with self._conn() as c:
             policies = c.execute("SELECT agent, version, policy_json, updated_at FROM learning_policies").fetchall()
             latest = c.execute("""SELECT l.agent, l.run_id, l.recorded_at, l.policy_before,
                 l.policy_after, l.sample_count, l.wins, l.losses, l.pnl,
@@ -130,7 +134,7 @@ class Store:
         return {"agents": state, "history": [dict(zip(history_fields, values)) for values in history]}
 
     def get_record(self, namespace, key, default=None):
-        with sqlite3.connect(self.path,timeout=10) as c:
+        with self._conn() as c:
             row=c.execute("SELECT payload FROM records WHERE namespace=? AND key=?",(namespace,str(key))).fetchone()
         return json.loads(row[0]) if row else default
 
@@ -139,42 +143,64 @@ class Store:
 
     def save_bundle(self, items):
         stamp=datetime.now(timezone.utc).isoformat()
-        with sqlite3.connect(self.path,timeout=10) as c:
-            c.execute("BEGIN IMMEDIATE")
-            for namespace,key,payload in items:
-                c.execute("INSERT INTO records VALUES(?,?,?,?) ON CONFLICT(namespace,key) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at",
-                          (namespace,str(key),json.dumps(json_safe(payload),allow_nan=False),stamp))
+        for attempt in range(3):
+            try:
+                with self._conn() as c:
+                    c.execute("BEGIN IMMEDIATE")
+                    for namespace,key,payload in items:
+                        c.execute("INSERT INTO records VALUES(?,?,?,?) ON CONFLICT(namespace,key) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at",
+                                  (namespace,str(key),json.dumps(json_safe(payload),allow_nan=False),stamp))
+                return
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower() and attempt < 2:
+                    time.sleep(0.25 * (attempt + 1))
+                    continue
+                raise
 
     def list_records(self, namespace, limit=100):
-        with sqlite3.connect(self.path,timeout=10) as c:
+        with self._conn() as c:
             rows=c.execute("SELECT payload FROM records WHERE namespace=? ORDER BY updated_at DESC,key DESC LIMIT ?",(namespace,limit)).fetchall()
         return [json.loads(row[0]) for row in rows]
 
+    def reserve_ml_holdout(self, scope, start, end, run_id):
+        """Reserve unseen symbol history atomically, including across app processes."""
+        with self._conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            rows = c.execute("SELECT key,payload FROM records WHERE namespace='ml_holdouts'").fetchall()
+            for key, payload in rows:
+                old = json.loads(payload)
+                if key.split("|")[0] == scope.split("|")[0] and old.get("test_end", "") >= start:
+                    return False
+            stamp = datetime.now(timezone.utc).isoformat()
+            payload = json.dumps({"scope": scope, "test_from": start, "test_end": end, "run_id": run_id})
+            c.execute("INSERT INTO records VALUES('ml_holdouts',?,?,?) ON CONFLICT(namespace,key) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at", (scope, payload, stamp))
+        return True
+
     def cache_get(self, key,include_expired=False):
-        with sqlite3.connect(self.path,timeout=10) as c:
+        with self._conn() as c:
             row=c.execute("SELECT payload FROM history_cache WHERE key=? AND (? OR expires_at=0 OR expires_at>?)",(key,include_expired,time.time())).fetchone()
         return json.loads(zlib.decompress(row[0])) if row else None
 
     def index_history(self,key,family,start,end,fields):
-        with sqlite3.connect(self.path,timeout=10) as c:
+        with self._conn() as c:
             c.execute("INSERT OR REPLACE INTO history_ranges VALUES(?,?,?,?,?)",(key,family,start,end,json.dumps(fields)))
 
     def history_ranges(self,family,start,end,fields,include_expired=False):
-        with sqlite3.connect(self.path,timeout=10) as c:
+        with self._conn() as c:
             rows=c.execute("SELECT r.key,r.start,r.end,r.fields FROM history_ranges r JOIN history_cache h ON h.key=r.key WHERE r.family=? AND r.start<? AND r.end>? AND (? OR h.expires_at=0 OR h.expires_at>?) ORDER BY r.start,r.end DESC",(family,end,start,include_expired,time.time())).fetchall()
         return [(key,a,b) for key,a,b,available in rows if set(fields)<=set(json.loads(available))]
 
     def cache_put(self, key, payload, ttl=86400*30):
         blob=zlib.compress(json.dumps(json_safe(payload),allow_nan=False).encode(),6)
-        with sqlite3.connect(self.path,timeout=10) as c:
+        with self._conn() as c:
             c.execute("INSERT INTO history_cache VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload,expires_at=excluded.expires_at",(key,blob,0 if ttl<0 else time.time()+ttl))
 
     def retain_cache(self,key):
-        with sqlite3.connect(self.path,timeout=10) as c:
+        with self._conn() as c:
             c.execute("UPDATE history_cache SET expires_at=0 WHERE key=?",(key,))
 
     def cache_summary(self):
-        with sqlite3.connect(self.path,timeout=10) as c:
+        with self._conn() as c:
             row=c.execute("SELECT COUNT(*),COALESCE(SUM(LENGTH(payload)),0),COALESCE(SUM(expires_at=0),0) FROM history_cache").fetchone()
         return {"responses":row[0],"compressed_bytes":row[1],"retained_responses":row[2],
                 "storage":"backend/trading_bot.db · compressed SQLite history_cache", "retention":"Historical backtest responses retained without automatic expiry; quotes and metadata retain their refresh rules"}
@@ -183,7 +209,7 @@ class Store:
         self.put_record("events",event["id"],event)
 
     def pending_paper_feedback(self,limit=100):
-        with sqlite3.connect(self.path,timeout=10) as c:
+        with self._conn() as c:
             rows=c.execute("""SELECT e.payload FROM records e WHERE e.namespace='episodes'
                 AND NOT EXISTS (SELECT 1 FROM records l WHERE l.namespace='learning_runs' AND l.key='paper:'||e.key)
                 ORDER BY e.updated_at LIMIT ?""",(limit,)).fetchall()

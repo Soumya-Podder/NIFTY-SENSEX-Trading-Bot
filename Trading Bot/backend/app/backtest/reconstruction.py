@@ -7,6 +7,8 @@ from collections import defaultdict
 import math
 import pandas as pd
 from ..pipeline import DecisionPipeline, execution_context, plan_protection
+from ..expectancy import CostModel
+from ..ai import extract_features
 from .data import _valid_bar
 from .metrics import metrics
 from ..risk import available_risk
@@ -76,6 +78,7 @@ class ResearchReplay:
         self.trades = []; self.daily = []; self.curve = []; self.unresolved = []
         self.skipped_entries = []
         self.plan = config.get("strategy_version") == "orb-retest-v1"
+        self.net = config.get("net_costs", False)
         self.stopped = False; self.coverage_incomplete = False; self.offset_switches = 0; self.skipped = 0
 
     def consume(self, frame, book, atm, cancel, recover=None):
@@ -96,12 +99,20 @@ class ResearchReplay:
             def close(symbol, q, price, stamp, reason):
                 nonlocal realized, count, loss_spend, losses, last_exit, session_locked
                 p = positions.pop(symbol); pnl = (price - p["entry_premium"]) * p["quantity"]
-                self.cash += price * p["quantity"]; realized += pnl; count += 1
-                loss_spend+=max(0.,-pnl); losses+=int(pnl<0); last_exit=stamp
+                costs = CostModel.estimate_round_trip(p["entry_premium"], price, p["quantity"]) if self.net else None
+                net_pnl = round(pnl - costs, 2) if self.net else None
+                self.cash += price * p["quantity"]
+                trade_pnl = net_pnl if self.net else pnl
+                realized += trade_pnl; count += 1
+                loss_spend+=max(0.,-trade_pnl); losses+=int(trade_pnl<0); last_exit=stamp
                 if self.plan and realized>=self.settings.daily_profit_target: session_locked=True
-                self.trades.append({**p, "exit_time":stamp.isoformat(), "exit_premium":price,
-                    "gross_pnl":pnl, "premium_points":price-p["entry_premium"], "pnl":None,
-                    "costs":None, "reason":reason, "exit_offsets":q["offsets"], "pnl_basis":"current_lot_gross_scenario"})
+                self.trades.append({**p, "exit_time":stamp.isoformat(), "exit_ts":stamp.isoformat(),
+                    "outcome_observed_at":(stamp+timedelta(minutes=1)).isoformat(),
+                    "exit_premium":price,
+                    "gross_pnl":pnl, "premium_points":price-p["entry_premium"], "pnl":net_pnl,
+                    "costs":costs, "reason":reason, "exit_offsets":q["offsets"],
+                    "quality":"research_net" if self.net else "research",
+                    "partial":False, "pnl_basis":"net" if self.net else "current_lot_gross_scenario"})
                 cooldown[symbol] = stamp + timedelta(minutes=self.settings.exit_cooldown_minutes if self.plan else 3)
             for stamp in stamps:
                 if cancel(): raise InterruptedError("Cancelled")
@@ -156,7 +167,8 @@ class ResearchReplay:
                         retest=lookup[(pd.Timestamp(signal["retest_timestamp"]),symbol)].get(q["contract_id"])
                         try:
                             contract={**q,"lot_size":lot,"tick_size":self.lots[symbol]["tick_size"]}
-                            signal=plan_protection(signal,contract,{**retest,"lot_size":lot} if retest else None,entry)
+                            signal=plan_protection(signal,contract,{**retest,"lot_size":lot} if retest else None,entry,
+                                min_stop=self.config.get("min_stop", 0.),horizon_minutes=self.config.get("horizon_minutes", 10))
                         except ValueError as exc:
                             self.skipped_entries.append({**signal,"contract_id":q["contract_id"],"reason":str(exc)})
                             continue
@@ -177,17 +189,27 @@ class ResearchReplay:
                     if not allowed: continue
                     self.cash -= entry*qty
                     entries+=1
+                    feats = extract_features(
+                        signal.get("signal_features", {}),
+                        signal,
+                        {**q, "ask": entry, "spread_pct": 0.01},
+                        stamp
+                    )
                     p = {**signal, "id":signal["id"], "contract_id":q["contract_id"], "expiry":None,
                          "strike":q["strike"], "expiry_bucket":q["expiry_bucket"], "identity_verified":False,
-                         "entry_time":stamp.isoformat(), "entry_premium":entry, "quantity":qty,
+                         "entry_time":stamp.isoformat(), "entry_ts":stamp.isoformat(),
+                         "strategy_version":self.config.get("strategy_version") or "orb-retest-v1",
+                         "exit_policy":"orb-retest-v1" if self.plan else "fixed_target_stop",
+                         "entry_features":feats,
+                         "entry_premium":entry, "quantity":qty,
                          "lot_scenario":self.lots[symbol], "stop":entry-risk_unit,
                          "sizing_audit":{"cash_before":self.cash+entry*qty,"premium_committed":entry*qty,
                             "risk_budget":budget,"stop_risk":risk_unit*qty,"correlated_risk_before":correlated,
-                            "daily_realized_gross_before":realized,"charges_included":False},
+                            "daily_realized_gross_before":realized,"charges_included":True},
                          "target":entry*(1+signal["target_percent"]), "risk":risk_unit*qty,
                          "mark":q["close"], "last_offsets":q["offsets"], "entry_offsets":q["offsets"],
                          "agent_contexts":{**signal["agent_contexts"], "Option Selector":"rolling_non_atm_budget",
-                            "EV":"research_no_verified_net_ev", "Risk":"research_gross_risk", "Execution":execution_context(stamp)}}
+                            "EV":"research_net_ev", "Risk":"research_net_risk", "Execution":execution_context(stamp)}}
                     positions[symbol] = p
                     self.pipeline.stage("Execution", symbol, "PASS", "Next-minute observed open; optimistic fill assumption", execution_context(stamp))
                 # Evaluate intrabar barriers only AFTER all opening fills: later proceeds
@@ -213,6 +235,12 @@ class ResearchReplay:
                     if signal["id"] in consumed: continue
                     consumed.add(signal["id"])
                     signal["signal_features"] = {k:row.get(k) for k in ("open","high","low","close","volume","ema9","ema21","ema50","vwap","atr","rsi","adx","relative_volume")}
+                    signal["signal_features"]["timestamp"] = str(stamp.isoformat())
+                    if row.get("atr") and row.get("atr") > 0:
+                        if row.get("vwap") is not None:
+                            signal["signal_features"]["vwap_distance_atr"] = (row.get("close", 0) - row.get("vwap", 0)) / row["atr"]
+                        if row.get("ema9") is not None and row.get("ema21") is not None:
+                            signal["signal_features"]["ema_slope_atr"] = (row.get("ema9", 0) - row.get("ema21", 0)) / row["atr"]
                     signal["opening_range"] = {"high":max(r["high"] for r in first),"low":min(r["low"] for r in first),"bars":len(first)}
                     atm_strikes = atm.get((stamp, symbol, signal["option_type"]), set())
                     candidates = [q for q in lookup[(stamp, symbol)].values() if q["option_type"] == signal["option_type"]
@@ -225,35 +253,54 @@ class ResearchReplay:
                     signal["selection_audit"] = {"candidate_count":len(candidates), "ranking":"Highest observed OI, then distance to underlying close", "selected_closed_candle":candidates[0]}
                     self.pipeline.stage("EV", symbol, "OBSERVATION", "Gross research only; net expectancy unverified", "research_no_verified_net_ev")
                     pending[symbol] = {"contract_id":candidates[0]["contract_id"], "signal":signal, "next_time":stamp+pd.Timedelta(minutes=1)}
-            self.daily.append({"date":day, "pnl":None, "gross_pnl":realized, "trades":count})
+            self.daily.append({
+                "date":day,
+                "pnl":realized if self.net else None,
+                "gross_pnl":realized + sum(t.get("costs", 0) for t in self.trades if t["exit_time"][:10] == day) if self.net else realized,
+                "trades":count
+            })
 
     def result(self, coverage):
         gross_trades = [{**t, "pnl":t["gross_pnl"], "costs":0} for t in self.trades]
         gross_days = [{**d, "pnl":d["gross_pnl"]} for d in self.daily]
-        calculated = metrics(gross_trades, [self.config["capital"]]+[p["value"] for p in self.curve], gross_days)
-        gross = calculated["total_pnl"]
+        eval_trades = self.trades if self.net else gross_trades
+        eval_days = self.daily if self.net else gross_days
+        calculated = metrics(eval_trades, [self.config["capital"]]+[p["value"] for p in self.curve], eval_days)
+        gross = calculated["total_pnl"] if not self.net else sum(t.get("gross_pnl", 0) for t in self.trades)
+        net_total = calculated["total_pnl"] if self.net else None
+        total_costs = sum(t.get("costs", 0) for t in self.trades) if self.net else None
         incomplete = self.stopped or self.coverage_incomplete
-        calculated.update(total_pnl=None, total_charges=None, target_day_rate=None,
-                          gross_pnl=None if incomplete else gross, partial_realized_gross_pnl=gross,
-                          average_daily_pnl=None, gross_average_daily_pnl=calculated["average_daily_pnl"])
+        calculated.update(
+            total_pnl=None if (incomplete or not self.net) else net_total,
+            total_charges=None if (incomplete or not self.net) else total_costs,
+            target_day_rate=None,
+            gross_pnl=None if incomplete else gross,
+            partial_realized_gross_pnl=gross,
+            average_daily_pnl=None if (incomplete or not self.net) else calculated["average_daily_pnl"],
+            gross_average_daily_pnl=calculated["average_daily_pnl"] if not self.net else (sum(d.get("gross_pnl", 0) for d in self.daily)/len(self.daily) if self.daily else None)
+        )
         if incomplete:
             for key in ("profit_factor", "win_rate", "expectancy", "max_drawdown", "max_drawdown_pct", "gross_average_daily_pnl"):
                 calculated[key] = None
             calculated["profit_factor_status"] = "INCOMPLETE"
-        return {"status":"research_partial" if incomplete else "research_complete", "quality":"research",
+        return {"status":"research_partial" if incomplete else "research_complete",
+            "quality":"research_net" if self.net else "research",
             "replay_version":"orb-retest-rolling-v1" if self.plan else "rolling-research-v3",
             "strategy_version":self.config.get("strategy_version"),
-            "fidelity":"minute_candle_current_lot_gross_scenario",
-            "source":"dhan_reconstructed_rolling", "pnl_basis":"current_lot_gross_scenario", "metrics":calculated,
+            "fidelity":"minute_candle_current_lot_net_scenario" if self.net else "minute_candle_current_lot_gross_scenario",
+            "source":"dhan_reconstructed_rolling",
+            "pnl_basis":"net" if self.net else "current_lot_gross_scenario",
+            "metrics":calculated,
             "trades":self.trades, "curve":self.curve, "daily":self.daily, "unresolved":self.unresolved,
             "skipped_entries":self.skipped_entries,
             "coverage":coverage, "agent_counts":self.pipeline.counts, "assumptions":ASSUMPTIONS + ([
                 "ORB retest entry and structural option stop use shared strategy functions; one lot, three entry attempts, two losing trades and global exit cooldown constrain the scenario.",
+                "This estimates the baseline's net candle outcome with standard Indian options transaction charges (brokerage, STT, turnover, GST, stamp duty). Risk admission uses net risk accounting." if self.net else
                 "This estimates the baseline's gross candle outcome. Missing historical fees, expiry-day exclusions, Greeks, validated EV, weekly/drawdown review locks and executable depth prevent full paper-policy parity. Risk admission uses gross stop risk only.",
                 "Current tick size and lot size are sourced scenarios. Intrabar stop/target exits are minute-bucket timestamps, not measured execution times."
             ] if self.plan else []),
             "reconstruction":{"held_offset_switches":self.offset_switches,"missing_entry_opens":self.skipped},
-            "issues":["Gross current-lot scenario only. Historical expiry identity, lot-size history, bid/ask and dated charges are unavailable. Net P&L is not calculated."] + (["Coverage is incomplete: headline performance is withheld; completed trades are partial evidence only."] if incomplete else [])}
+            "issues":["Net current-lot scenario with estimated Dhan transaction costs in ₹." if self.net else "Gross current-lot scenario only. Historical expiry identity, lot-size history, bid/ask and dated charges are unavailable. Net P&L is not calculated."] + (["Coverage is incomplete: headline performance is withheld; completed trades are partial evidence only."] if incomplete else [])}
 
 
 def dhan_plan_research(gateway,config,progress,cancel):
@@ -333,7 +380,7 @@ def dhan_research(gateway, config, progress, cancel, settings):
             if not frame.empty: frames.append(frame)
     if not frames: raise ValueError("Dhan returned no index candles in the selected range")
     features = DecisionPipeline.features(pd.concat(frames, ignore_index=True).drop_duplicates(["timestamp", "symbol"]))
-    replay = ResearchReplay(config, settings, lots)
+    replay = ResearchReplay({**config, "net_costs": True}, settings, lots)
     any_options = False
     total = len(chunks)*len(config["symbols"])*len(OFFSETS)*2; completed = 0
     for a, b in chunks:

@@ -13,6 +13,7 @@ from .walk_forward import validation_windows
 from ..telemetry.agent_metrics import learn_from_outcomes
 from ..market_data import HISTORY_CACHE_ONLY
 from ..risk import PlanRiskPolicy
+from ..ai import LearningService
 
 ACTIVE={"queued","running","cancelling"}
 ARCHIVE_STRIKE_OFFSETS=("ATM","ATM-4","ATM-3","ATM-2","ATM-1","ATM+1","ATM+2","ATM+3","ATM+4")
@@ -180,7 +181,7 @@ class BacktestJobs:
                     archive_manifest_id=identifier,
                     message=f"Download pass finished: {counts['nonempty_responses']} populated responses; {counts['empty_responses']} empty responses (not verified coverage). Cached data retained; no strategy or learning executed.")
                 return
-            replay=None; windows=None; dataset_id=None
+            replay=None; windows=None; dataset_id=None; ml_replay=None
             if config["source"]=="dhan":
                 if not self.settings.dhan_client_id or not self.settings.dhan_access_token: raise ValueError("Dhan credentials are not configured")
                 result=dhan_research(self.gateway,config,progress,cancelled,self.settings)
@@ -190,7 +191,8 @@ class BacktestJobs:
                 cfg=BacktestConfig(initial_capital=config["capital"],risk_per_trade=config["risk_per_trade"],
                     daily_loss_limit=config.get("daily_loss_limit",self.settings.daily_loss_limit_rupees),correlated_risk_limit=config.get("correlated_risk_limit",self.settings.max_correlated_risk_rupees),
                     max_positions=self.settings.max_open_positions,daily_target=self.settings.daily_profit_target,
-                    entry_cutoff=self.settings.entry_cutoff,exit_at=self.settings.session_exit)
+                    entry_cutoff=self.settings.entry_cutoff,exit_at=self.settings.session_exit,adaptive_exits=False,
+                    horizon_minutes=60,min_stop=8.0,invalidation_buffer=25.0)
                 if config.get("strategy_version")=="orb-retest-v1":
                     # Research inputs are editable; do not cap them to the paper
                     # account. Preserve the declared allocation/reserve ratios.
@@ -199,7 +201,9 @@ class BacktestJobs:
                     plan=replace(base,trade_risk=config["risk_per_trade"],loss_allocation=base.loss_allocation*ratio,
                         emergency_reserve=base.emergency_reserve*ratio,
                         premium_limit=config["capital"]*(base.premium_limit/self.settings.paper_capital),
-                        cash_reserve=config["capital"]*(base.cash_reserve/self.settings.paper_capital))
+                        cash_reserve=config["capital"]*(base.cash_reserve/self.settings.paper_capital),
+                        weekly_loss=base.weekly_loss*ratio,
+                        max_drawdown=base.max_drawdown*ratio)
                     cfg=replace(cfg,plan_policy=plan,max_positions=1,cooldown_bars=plan.cooldown_minutes)
                 # Frozen base rules for historical reporting; today's learned policies would leak future outcomes.
                 result=BacktestEngine(cfg).run(frame,cancelled,lambda n,total:progress("Replaying shared-capital portfolio",n,total))
@@ -216,6 +220,11 @@ class BacktestJobs:
                         subset=frame[frame.timestamp.dt.strftime("%Y-%m-%d")<=end]
                         replay_cache[key]=BacktestEngine(replace(cfg,trade_from=start,learning_policies=policies)).run(subset,cancelled)
                     return replay_cache[key]
+                def ml_replay(artifact,start,end):
+                    subset=frame[frame.timestamp.dt.strftime("%Y-%m-%d")<=end]
+                    baseline=BacktestEngine(replace(cfg,trade_from=start)).run(subset,cancelled)
+                    candidate=BacktestEngine(replace(cfg,trade_from=start,ml_artifact=artifact)).run(subset,cancelled)
+                    return candidate,baseline
             if cancelled(): raise InterruptedError("Cancelled")
             report=report_from_run(result,config)
             progress("Recording agent feedback and validation evidence",0,1)
@@ -230,6 +239,12 @@ class BacktestJobs:
                 job.update(status=report["status"],progress=100,message="Report saved",report_id=identifier)
                 self.store.save_bundle([("reports",identifier,report),("jobs",identifier,job),
                     ("backtest","latest",{"report_id":identifier})])
+            try:
+                learning=LearningService(self.store).train(report,identifier,replay=ml_replay)
+                report["ml_learning"]=learning
+                self.store.put_record("reports",identifier,report)
+            except Exception as exc:
+                self.store.put_record("ml_state","latest",{"status":"TRAINING_FAILED","error":type(exc).__name__,"run_id":identifier})
         except InterruptedError:
             self.update(identifier,status="cancelled",message="Cancelled; previous reports and cached data retained")
         except Exception as exc:

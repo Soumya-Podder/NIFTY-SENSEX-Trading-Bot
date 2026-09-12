@@ -10,6 +10,8 @@ from ..session import local_time,session_state
 from .metrics import metrics
 from ..risk import available_risk,PlanRiskPolicy
 from ..setups import opening_range_retest
+from ..ai import extract_features, MLTradeQualityModel, scope
+from ..adaptive_exit import update_exit, VERSION as ADAPTIVE_EXIT_VERSION
 
 
 @dataclass
@@ -28,6 +30,10 @@ class BacktestConfig:
     plan_policy: PlanRiskPolicy | None=None
     horizon_minutes: int=10
     reward_multiple: float=2.
+    adaptive_exits: bool=False
+    ml_artifact: dict | None=None
+    min_stop: float=0.
+    invalidation_buffer: float=0.
 
 
 class BacktestEngine:
@@ -73,6 +79,7 @@ class BacktestEngine:
             cash+=price*p["qty"]-fees["total"]
             trade={**p,"id":str(uuid.uuid4()),"exit":price,"exit_ts":stamp,"exit_premium":price,
                    "entry_premium":p["entry"],"quantity":p["qty"],"gross_pnl":gross,
+                   "outcome_observed_at":stamp+timedelta(minutes=1),
                    "costs":p["entry_charges"]["total"]+fees["total"],"exit_charges":fees,"pnl":pnl,
                    "reason":reason,"quality":"verified","source":"historical_contract_candles",
                    "holding_minutes":(stamp-p["entry_ts"]).total_seconds()/60,
@@ -103,7 +110,7 @@ class BacktestEngine:
                 if policy:
                     current_week=stamp.isocalendar()[:2]
                     if current_week!=week: weekly_pnl=0.; week=current_week
-                    sticky=ledger["lock_reason"] if ledger["lock_reason"] in {"WEEKLY_LOSS","DRAWDOWN"} else None
+                    sticky="DRAWDOWN" if ledger["lock_reason"]=="DRAWDOWN" else ("WEEKLY_LOSS" if ledger["lock_reason"]=="WEEKLY_LOSS" and current_week==week else None)
                     ledger={"loss_spend":0.,"losses":0,"entries":0,"last_exit":None,"lock_reason":sticky}
                     gross_realized=0.; halted=bool(sticky)
             quotes={q["contract_id"]:q for r in rows for q in (r.get("option_quotes") or []) if q.get("contract_id")}
@@ -124,7 +131,7 @@ class BacktestEngine:
                 if policy:
                     if str(q["expiry"])[:10]<=date: continue
                     try:
-                        signal=plan_protection(signal,q,selected.get("retest_quote"),price,cfg.reward_multiple,cfg.horizon_minutes)
+                        signal=plan_protection(signal,q,selected.get("retest_quote"),price,cfg.reward_multiple,cfg.horizon_minutes,cfg.min_stop)
                     except ValueError as exc:
                         opportunities.append({"signal_id":signal["id"],"timestamp":stamp,"status":"REJECTED","reason":str(exc)})
                         continue
@@ -150,6 +157,12 @@ class BacktestEngine:
                         filled=(qty,buy,risk); break
                 if not filled: continue
                 qty,buy,risk=filled
+                if cfg.adaptive_exits: signal["exit_policy"]=ADAPTIVE_EXIT_VERSION
+                feature_contract={**selected,"ask":price}
+                entry_features=extract_features(signal.get("feature_row",{}),signal,feature_contract,stamp)
+                model_signal={**signal,"symbol":symbol,"entry_features":entry_features}
+                if cfg.ml_artifact and scope(model_signal)==cfg.ml_artifact["scope"]:
+                    if MLTradeQualityModel(cfg.ml_artifact).predict(entry_features)<cfg.ml_artifact["threshold"]: continue
                 contexts={**signal["agent_contexts"],"Option Selector":selected["option_context"],
                           "EV":"uncalibrated","Risk":"shared_portfolio" if positions else "one_position","Execution":execution_context(stamp)}
                 if any(not pipeline.context_allowed(a,context) for a,context in contexts.items()): continue
@@ -158,9 +171,12 @@ class BacktestEngine:
                     "stop":price*(1-signal["stop_percent"]),"target":price*(1+signal["target_percent"]),
                     "risk_rupees":risk,"mark":price,"setup":signal["setup"],"regime":signal["regime"],
                     "agent_contexts":contexts,"policy_versions":signal["policy_versions"],"mae":0,"mfe":0}
+                positions[q["contract_id"]].update(entry_features=entry_features,
+                    strategy_version=signal.get("strategy_version"),option_atr=signal.get("option_atr"))
                 if policy:
                     positions[q["contract_id"]].update(stop=signal["stop_price"],target=signal["target_price"],
                         invalidation=signal["invalidation"],horizon_minutes=signal["horizon_minutes"],
+                        invalidation_buffer=cfg.invalidation_buffer,
                         exit_policy=signal["exit_policy"],protection_evidence=signal["protection_evidence"],signal_id=signal["id"])
                     ledger["entries"]+=1
                     opportunities.append({"signal_id":signal["id"],"timestamp":stamp,"status":"FILLED",
@@ -186,7 +202,10 @@ class BacktestEngine:
                     elif stamp.strftime("%H:%M")>=cfg.exit_at: close_position(cid,q,stamp,"SESSION_EXIT",q["open"])
                     elif q["low"]<=p["stop"]: close_position(cid,q,stamp,"STOP",min(p["stop"],q["open"]))
                     else:
-                        reason=plan_exit(p,completed,bid=q["close"],underlying=underlying)
+                        if cfg.adaptive_exits:
+                            exit_cost=CostModel.historical(p,q["close"],p["qty"],"sell",completed)["total"]
+                            update_exit(p,float(q["close"]),completed,exit_cost,{"timestamp":str(stamp),"high":q["high"],"low":q["low"]})
+                        reason=plan_exit(p,completed,bid=q["close"],underlying=underlying,close_start=cfg.exit_at)
                         if reason: close_position(cid,q,completed,reason,q["close"])
                         elif q["high"]>=p["target"]: close_position(cid,q,stamp,"TARGET",p["target"])
                 elif state=="EXIT_ONLY": close_position(cid,q,stamp,"SESSION_EXIT",q["open"])
@@ -204,7 +223,7 @@ class BacktestEngine:
                     lock=("DAILY_LOSS" if liquidation-baseline<=-policy.loss_allocation else
                           "DRAWDOWN" if liquidation-equity_peak<=-policy.max_drawdown else
                           "WEEKLY_LOSS" if weekly_pnl+liquidation-baseline<=-policy.weekly_loss else
-                          "GROSS_TARGET" if gross>=policy.gross_target else None)
+                          ("NET_TARGET" if policy.target_basis == "net" else "GROSS_TARGET") if policy.target_reached(gross, liquidation-baseline) else None)
                     if lock:
                         ledger["lock_reason"]=lock; halted=True; pending={}
                         for cid,p in list(positions.items()):
@@ -229,6 +248,7 @@ class BacktestEngine:
                 signal=(pipeline.plan_candidate(plan_candidates.get((stamp.isoformat(),symbol)),symbol) if policy else
                         pipeline.signal(row,max((r["high"] for r in opening),default=None),min((r["low"] for r in opening),default=None),len(opening)))
                 if not signal: continue
+                signal["feature_row"]=row
                 if policy:
                     if signal["id"] in consumed: continue
                     consumed.add(signal["id"])
@@ -242,7 +262,12 @@ class BacktestEngine:
                         if policy:
                             if str(candidate["expiry"])[:10]<=date: continue
                             retest_quote=option_history.get((candidate["contract_id"],signal["retest_timestamp"]))
-                            signal=plan_protection(signal,candidate,retest_quote,price,cfg.reward_multiple,cfg.horizon_minutes)
+                            from ..indicators import atr as option_atr
+                            previous_bars=[{**v,"timestamp":t} for (cid,t),v in option_history.items() if cid==candidate["contract_id"] and pd.Timestamp(t)<=pd.Timestamp(signal["retest_timestamp"])]
+                            if len(previous_bars)>=14:
+                                history=pd.DataFrame(previous_bars).sort_values("timestamp")
+                                signal["option_atr"]=float(option_atr(history).iloc[-1])
+                            signal=plan_protection(signal,candidate,retest_quote,price,cfg.reward_multiple,cfg.horizon_minutes,cfg.min_stop)
                             candidate={**candidate,"retest_quote":retest_quote}
                         buy=CostModel.historical(candidate,price,lot,"buy",stamp)
                         exit_price=max(candidate["tick_size"],price*(1-signal["stop_percent"])-candidate["tick_size"])

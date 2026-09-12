@@ -148,12 +148,21 @@ class PaperEngine:
             self.stop_event.wait(2)
 
     def _loop(self):
+        consecutive_errors = 0
         while not self.stop_event.is_set():
             try:
-                self.cycle(); self.status["error"]=None
+                self.cycle()
+                consecutive_errors = 0
+                if not self.broker.state.get("halted") or self.broker.state.get("halt_reason") != "Paper engine error; exits remain active":
+                    self.status["error"] = None
             except Exception as exc:
-                self.status["error"]=str(exc)[:300]
-                self.broker.control(halted=True,reason="Paper engine error; exits remain active")
+                consecutive_errors += 1
+                self.status["error"] = str(exc)[:300]
+                import logging
+                logging.getLogger("paper_engine").exception("Paper engine cycle error: %s", exc)
+                if consecutive_errors >= 2:
+                    self.broker.control(halted=True, reason="Paper engine error; exits remain active")
+                    self.publish(event("Risk", "PORTFOLIO", "REJECTED", f"Paper engine error: {str(exc)[:150]}", evaluation={"error": str(exc)[:300]}))
             self.stop_event.wait(2)
 
     def cycle(self):

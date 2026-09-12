@@ -111,6 +111,11 @@ def evaluate_completed_bars(bars,now,symbol,problem=None,*,orb_candidate="evalua
             rows[2].update(status="CANDIDATE",reason="Range boundary rejected; price has room to return toward midpoint")
         else: rows[2]["reason"]="No confirmed range rejection with sufficient room to midpoint"
     else: rows[2]["reason"]="Range regime or 32 completed session bars not available"
+    feature_row={k:(None if pd.isna(last.get(k)) else last.get(k)) for k in
+        ("timestamp","close","atr","adx","vwap_distance_atr","relative_volume","rsi")}
+    feature_row["timestamp"]=str(last.timestamp)
+    feature_row["ema_slope_atr"]=slope
+    for signal in signals: signal["feature_row"]=feature_row
     return signals,rows
 
 

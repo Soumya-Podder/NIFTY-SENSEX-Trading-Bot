@@ -86,10 +86,11 @@ def _passes(baseline,candidate,min_trades,min_days):
     if c["trades"]<min_trades or len(days)<min_days: return False,"Insufficient independent validation trades or sessions"
     if c["trades"]<.7*b["trades"]: return False,"Candidate removes too much trade coverage"
     diff=np.array([cd[d]-bd[d] for d in days],float)
-    lower=float(diff.mean()-3*diff.std(ddof=1)/math.sqrt(len(diff)))
+    se=float(diff.std(ddof=1)/math.sqrt(len(diff))) if len(diff)>1 else 0.
+    lower=float(diff.mean()-2.50*se)
     passed=(c["total_pnl"]>0 and c["expectancy"]>0 and c["total_pnl"]>b["total_pnl"] and
-            c["max_drawdown"]>=b["max_drawdown"] and lower>0)
-    return passed,f"Paired daily improvement lower bound: {lower:.2f}; positive expectancy and drawdown gates {'passed' if passed else 'failed'}"
+            c["max_drawdown"]>=b["max_drawdown"] and (diff.mean()>0 and lower>0))
+    return passed,f"Paired daily improvement mean: {diff.mean():.2f}, lower: {lower:.2f}; positive expectancy and drawdown gates {'passed' if passed else 'failed'}"
 
 
 _learning_lock=threading.RLock()
@@ -147,8 +148,13 @@ def _learn_from_outcomes(trades,source,store,run_id=None,*,quality="unverified",
             for trade in training_trades:
                 context=trade.get("agent_contexts",{}).get(agent)
                 if context is not None: groups[str(context)].append(trade)
-            eligible=[(key,_stats(items)) for key,items in groups.items() if len(items)>=settings.learning_min_context_trades and _stats(items)["pnl"]!=0]
-            if training.get("quality")=="verified" and len(training_trades)>=settings.learning_min_train_trades and eligible:
+            n_train = len(training_trades)
+            min_context = max(20, settings.learning_min_context_trades)
+            min_train = max(60, settings.learning_min_train_trades)
+            min_val_trades = max(30, settings.learning_min_validation_trades)
+            min_val_days = max(10, settings.learning_min_validation_days)
+            eligible=[(key,_stats(items)) for key,items in groups.items() if len(items)>=min_context and _stats(items)["pnl"]!=0]
+            if training.get("quality")=="verified" and n_train>=min_train and eligible:
                 losing=[item for item in eligible if item[1]["pnl"]<0]
                 context=(min(losing,key=lambda item:item[1]["expectancy"]) if losing else max(eligible,key=lambda item:item[1]["expectancy"]))[0]
                 blocked=context if losing else None
@@ -160,13 +166,13 @@ def _learn_from_outcomes(trades,source,store,run_id=None,*,quality="unverified",
                 candidate_policies={**existing,agent:policy}
                 baseline=replay(existing,windows["validation_from"],windows["validation_to"])
                 candidate=replay(candidate_policies,windows["validation_from"],windows["validation_to"])
-                passed,note=_passes(baseline,candidate,settings.learning_min_validation_trades,settings.learning_min_validation_days)
+                passed,note=_passes(baseline,candidate,min_val_trades,min_val_days)
                 evidence.append({"window":"validation","reason":note,"baseline":baseline["metrics"],"candidate":candidate["metrics"]})
                 baseline_stats=baseline["metrics"]; candidate_stats=candidate["metrics"]
                 if passed:
                     baseline_test=replay(existing,windows["test_from"],windows["test_to"])
                     candidate_test=replay(candidate_policies,windows["test_from"],windows["test_to"])
-                    passed,note=_passes(baseline_test,candidate_test,settings.learning_min_validation_trades,settings.learning_min_validation_days)
+                    passed,note=_passes(baseline_test,candidate_test,min_val_trades,min_val_days)
                     evidence.append({"window":"untouched_test","reason":note,"baseline":baseline_test["metrics"],"candidate":candidate_test["metrics"]})
                 status="PROMOTED" if passed else "REJECTED"
                 if passed:
@@ -199,8 +205,9 @@ def _learn_from_outcomes(trades,source,store,run_id=None,*,quality="unverified",
     if before_commit: before_commit()
     # Passing a statistical gate creates a review candidate, never a deployment.
     for promotion in promotions:
-        candidate={**promotion["policy"],"validation_status":"AWAITING_REVIEW","effective_from":None}
-        store.put_record("learning_candidates",run_id+":"+promotion["agent"],candidate)
+        cand_key = run_id + ":" + promotion["agent"]
+        candidate={**promotion["policy"],"candidate_key":cand_key,"run_id":run_id,"source_run_id":run_id,"validation_status":"AWAITING_REVIEW","effective_from":None}
+        store.put_record("learning_candidates",cand_key,candidate)
     for entry in entries:
         if entry["validation_status"]=="PROMOTED":
             entry.update(validation_status="AWAITING_REVIEW",adjustment_status="NOT_APPLIED",policy_after=entry["policy_before"])

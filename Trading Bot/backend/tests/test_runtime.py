@@ -50,7 +50,8 @@ def test_option_stream_requires_depth_and_explicit_freshness():
             'volume':100,'OI':100,'depth':[{'bid_price':'99','ask_price':'100','bid_quantity':20,'ask_quantity':30}]}
     feed._on_message(None,packet)
     q=feed.executable_quotes()[c['contract_id']]
-    assert q['bid']==99 and q['ask_qty']==30 and quote_is_fresh(q)
+    # Assert against a controlled observation time, not test-runner wall-clock speed.
+    assert q['bid']==99 and q['ask_qty']==30 and quote_is_fresh(q,datetime.fromisoformat(q['timestamp'])+timedelta(seconds=1))
     assert not quote_is_fresh(q,datetime.fromisoformat(q['timestamp'])+timedelta(seconds=3))
     feed._on_message(None,{**packet,'type':'Ticker Data','LTP':'105'})
     assert feed.executable_quotes()[c['contract_id']]['ask']==100

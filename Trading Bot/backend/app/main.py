@@ -14,12 +14,18 @@ from .expectancy import CostModel
 from .market_data import DhanGateway, DhanMarketData
 from .paper_engine import PaperEngine
 from .portfolio_engine import MultiStrategyPaperEngine
-from .session import now_ist
+from .session import now_ist, session_state
 from .backtest.jobs import BacktestJobs,resolve_backtest_start
 from .telemetry.agent_metrics import agent_metrics_from_events, plan_agent_capabilities
 from .telemetry.decision_trace import pipeline_from_events
 from .telemetry.event_bus import event_bus
 from .risk import PlanRiskPolicy
+from .ai import LearningService, get_analysts
+from .learning_monitor import LearningMonitor
+from .autonomous_agent import AutonomousTradingAgent, get_autonomous_agent
+import threading
+import uuid
+import asyncio
 
 ROOT=Path(__file__).resolve().parents[2]
 store=Store(ROOT/"backend"/"trading_bot.db")
@@ -30,6 +36,14 @@ market_data=DhanMarketData(settings.dhan_client_id,settings.dhan_access_token,"N
 engine_class=MultiStrategyPaperEngine if settings.paper_strategy_mode=="portfolio" else PaperEngine
 engine=engine_class(settings,store,gateway,paper,market_data)
 jobs=BacktestJobs(store,gateway,settings,ROOT/"data")
+ml_learning=getattr(engine,"learning",LearningService(store))
+analysts = get_analysts()
+llm_client = analysts.get("llm_client")
+
+# Autonomous agent
+autonomous_agent = get_autonomous_agent(ROOT)
+autonomous_agent.set_dependencies(paper, market_data, engine)
+learning_monitor = LearningMonitor(store, engine, ml_learning, ROOT/".env", autonomous_agent)
 
 
 @asynccontextmanager
@@ -38,8 +52,14 @@ async def lifespan(app):
     for item in reversed(store.list_records("events",80)): event_bus.publish(item)
     paper.control(enabled=settings.paper_autostart)
     engine.start(); market_data.start()
+    autonomous_agent.start()
+    learning_monitor.start()
     yield
+    learning_monitor.stop()
+    autonomous_agent.stop()
     engine.stop(); jobs.stop(); market_data.stop()
+    if llm_client:
+        await llm_client.close()
 
 
 app=FastAPI(title="Options Paper Lab",version="4.0.0",lifespan=lifespan)
@@ -90,6 +110,128 @@ def last_report():
     return store.get_record("reports",pointer.get("report_id",""),{"status":"not_run","metrics":{},"trades":[]})
 
 
+@app.get("/api/learning/model")
+def learning_model():
+    return json_safe(ml_learning.status())
+
+
+@app.post("/api/learning/train",status_code=202)
+def train_learning_model():
+    if ml_learning.lock.locked(): raise HTTPException(409,detail="Model training is already running")
+    report=last_report()
+    identifier="manual-"+uuid.uuid4().hex
+    def train():
+        try: ml_learning.train(report,identifier)
+        except Exception as exc:
+            store.put_record("ml_state","latest",{"status":"TRAINING_FAILED","run_id":identifier,"error":type(exc).__name__})
+    threading.Thread(target=train,name="paper-model-training",daemon=True).start()
+    return {"run_id":identifier,"status":"QUEUED","note":"New backtest jobs run automatic training and full replay where supported"}
+
+
+# ──────────────────────────────────────────────────────────────
+# LLM Analysis Endpoints
+# ──────────────────────────────────────────────────────────────
+
+class LLMMarketRequest(BaseModel):
+    include_market_data: bool = True
+    include_option_chain: bool = True
+    include_recent_trades: int = 20
+
+
+class LLMFailureRequest(BaseModel):
+    trade_ids: list[str] | None = None
+    lookback_days: int = 30
+    min_pnl: float = 0  # negative = losses only
+
+
+class LLMHypothesisRequest(BaseModel):
+    include_market_analysis: bool = True
+    include_failure_analysis: bool = True
+
+
+class LLMTradeRequest(BaseModel):
+    trade_id: str
+
+
+@app.get("/api/llm/status")
+def llm_status():
+    return {
+        "enabled": settings.llm_enabled,
+        "configured": bool(settings.openrouter_api_key),
+        "model": settings.openrouter_model if settings.llm_enabled else None,
+        "analysts_llm_enhanced": analysts.get("llm_client") is not None,
+    }
+
+
+@app.post("/api/llm/analyze/market")
+def llm_analyze_market(request: LLMMarketRequest):
+    if not analysts.get("llm_client"):
+        raise HTTPException(503, detail="LLM not configured. Set OPENROUTER_API_KEY and enable llm_enabled in .env")
+    market_analyst = analysts["market"]
+    state = {}
+    if request.include_market_data:
+        state["market_snapshot"] = market_data.snapshot()
+    if request.include_option_chain:
+        try:
+            state["option_chain"] = {s: gateway.chain(s) for s in ("NIFTY", "SENSEX")}
+        except Exception:
+            state["option_chain"] = {}
+    if request.include_recent_trades:
+        recent = store.list_records("trades", request.include_recent_trades)
+        state["recent_trades"] = recent
+    state["session"] = session_state()
+    return json_safe(market_analyst.analyze(state))
+
+
+@app.post("/api/llm/analyze/failures")
+def llm_analyze_failures(request: LLMFailureRequest):
+    if not analysts.get("llm_client"):
+        raise HTTPException(503, detail="LLM not configured")
+    failure_analyst = analysts["failure"]
+    trades = store.list_records("trades", 200)
+    if request.trade_ids:
+        trades = [t for t in trades if t.get("id") in request.trade_ids]
+    else:
+        cutoff = (now_ist() - timedelta(days=request.lookback_days)).isoformat()
+        trades = [t for t in trades if t.get("exit_ts", "") >= cutoff and (t.get("pnl", 0) <= request.min_pnl)]
+    return json_safe(failure_analyst.analyze(trades))
+
+
+@app.post("/api/llm/generate/hypotheses")
+def llm_generate_hypotheses(request: LLMHypothesisRequest):
+    if not analysts.get("llm_client"):
+        raise HTTPException(503, detail="LLM not configured")
+    hypothesis_gen = analysts["hypothesis"]
+    analysis = {}
+    if request.include_market_analysis:
+        market_state = {"market_snapshot": market_data.snapshot(), "session": session_state()}
+        analysis["market_analysis"] = analysts["market"].analyze(market_state)
+    if request.include_failure_analysis:
+        recent_trades = store.list_records("trades", 100)
+        losing = [t for t in recent_trades if t.get("pnl", 0) < 0]
+        analysis["failure_analysis"] = analysts["failure"].analyze(losing)
+    analysis["strategy_params"] = {
+        "max_trade_risk_rupees": settings.max_trade_risk_rupees,
+        "daily_loss_limit_rupees": settings.daily_loss_limit_rupees,
+        "entry_cutoff": settings.entry_cutoff,
+        "session_exit": settings.session_exit,
+        "max_open_positions": settings.max_open_positions,
+        "strategy_version": settings.strategy_version,
+    }
+    return json_safe(hypothesis_gen.generate(analysis))
+
+
+@app.post("/api/llm/analyze/trade")
+def llm_analyze_trade(request: LLMTradeRequest):
+    if not analysts.get("llm_client"):
+        raise HTTPException(503, detail="LLM not configured")
+    trade_analyst = analysts["trade"]
+    trade = store.get_record("trades", request.trade_id)
+    if not trade:
+        raise HTTPException(404, detail="Trade not found")
+    return json_safe(trade_analyst.analyze(trade))
+
+
 def redacted(value):
     if isinstance(value,dict): return {k:redacted(v) for k,v in value.items()}
     if isinstance(value,list): return [redacted(v) for v in value]
@@ -123,7 +265,7 @@ def risk():
         "daily_loss_limit_rupees":settings.daily_loss_limit_rupees,"max_correlated_risk_rupees":settings.max_correlated_risk_rupees,
         "hard_daily_halt_rupees":settings.hard_daily_halt_rupees,"max_open_positions":settings.max_open_positions,
         "session_start":settings.session_start,"entry_cutoff":settings.entry_cutoff,"session_exit":settings.session_exit,"daily_target":settings.daily_profit_target,
-        "target_is_guaranteed":False,"target_basis":"gross","plan_policy":plan_policy.describe(),
+        "target_is_guaranteed":False,"target_basis":settings.daily_profit_target_basis,"plan_policy":plan_policy.describe(),
         "remaining_loss_allocation":account.get("remaining_loss_allocation"),"loss_ledger":account.get("loss_ledger")}
 
 
@@ -170,6 +312,7 @@ def resume():
         raise HTTPException(409,detail="Daily loss limit cannot be overridden within the same session")
     if not account["valuation_complete"]: raise HTTPException(409,detail="Fresh held-contract quotes required before resuming")
     paper.control(halted=False)
+    if hasattr(engine,"status"): engine.status["error"]=None
     return risk()
 
 
@@ -186,16 +329,28 @@ def dashboard():
     events=event_bus.recent(80); learned=store.learning_snapshot(); account=paper.snapshot()
     # Reports are fetched by ID, not overwritten by every two-second market refresh.
     result={**mode(),"generated_at":now_ist().isoformat(),"market":market_data.snapshot(),"account":account,
-        "engine":dict(engine.status),"risk":risk(),"events":events,"implementation":implementation_status(),
+        "engine":dict(engine.status),"risk":risk(),"events":events,"implementation":implementation_status(),"ml_learning":learning_model(),
         "strategies":engine.describe_strategies() if hasattr(engine,"describe_strategies") else None,
         "pipelines":{symbol:pipeline_from_events(events,symbol) for symbol in ("NIFTY","SENSEX")},
         "agent_metrics":agent_metrics_from_events(events,learning=learned),"active_policies":store.active_learning_policies(),
         "learning_candidates":store.list_records("learning_candidates",100),
         "jobs":store.list_records("jobs",10),"latest_report":store.get_record("backtest","latest",{}),
+        "autonomous_agent":autonomous_agent.get_status() if autonomous_agent.running else {"running": False},
         "defaults":{"capital":settings.paper_capital,"risk_per_trade":settings.max_trade_risk_rupees,
             "daily_loss_limit":settings.daily_loss_limit_rupees,"correlated_risk_limit":settings.max_correlated_risk_rupees}}
+    result["learning_monitor"] = learning_monitor.status()
     result["account"].pop("consumed_signals",None)
     return json_safe(redacted(result))
+
+
+@app.get("/api/learning/monitor/history")
+def learning_monitor_history():
+    return {"changes": store.list_records("learning_monitor_history", 100)}
+
+
+@app.get("/api/learning/monitor")
+def learning_monitor_status():
+    return json_safe(learning_monitor.status())
 
 
 @app.get("/api/agents")
@@ -335,3 +490,45 @@ async def websocket(ws:WebSocket):
     try:
         async for item in event_bus.subscribe(): await ws.send_json(json_safe(redacted(item)))
     except (WebSocketDisconnect,RuntimeError,asyncio.CancelledError): pass
+
+
+# ──────────────────────────────────────────────────────────────
+# Autonomous Agent Endpoints
+# ──────────────────────────────────────────────────────────────
+
+@app.get("/api/agent/status")
+def agent_status():
+    return json_safe(autonomous_agent.get_status())
+
+
+@app.post("/api/agent/control")
+def agent_control(request: PaperControl):
+    if request.enabled:
+        autonomous_agent.start()
+    else:
+        autonomous_agent.stop()
+    return autonomous_agent.get_status()
+
+
+@app.get("/api/agent/state")
+def agent_state():
+    return json_safe({
+        "session_date": autonomous_agent.state.session_date,
+        "total_trades": autonomous_agent.state.total_trades,
+        "winning_trades": autonomous_agent.state.winning_trades,
+        "losing_trades": autonomous_agent.state.losing_trades,
+        "net_pnl": autonomous_agent.state.net_pnl,
+        "gross_pnl": autonomous_agent.state.gross_pnl,
+        "max_drawdown": autonomous_agent.state.max_drawdown,
+        "daily_target_hit": autonomous_agent.state.daily_target_hit,
+        "daily_loss_limit_hit": autonomous_agent.state.daily_loss_limit_hit,
+        "last_model_retrain": autonomous_agent.state.last_model_retrain,
+        "strategy_stats": autonomous_agent.strategy_stats,
+        "dynamic_params": autonomous_agent.dynamic_params,
+    })
+
+
+@app.post("/api/agent/retrain")
+def agent_retrain():
+    autonomous_agent._retrain_models()
+    return {"status": "triggered", "last_retrain": autonomous_agent.state.last_model_retrain}

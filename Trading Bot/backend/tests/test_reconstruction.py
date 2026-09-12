@@ -236,3 +236,47 @@ def test_intrabar_exit_proceeds_cannot_fund_another_opening_fill():
     assert [t["symbol"] for t in replay.trades]==["NIFTY"]
     assert replay.trades[0]["reason"]=="STOP"
     assert replay.cash==90
+
+
+def test_research_replay_net_costs_and_learning_ingestion(tmp_path):
+    from app.ai import LearningService
+    dates = pd.date_range("2026-08-31 09:15", "2026-08-31 15:05", freq="min", tz="Asia/Kolkata")
+    frame = pd.DataFrame([{"timestamp": t, "symbol": "NIFTY", "open": 100, "high": 101, "low": 99, "close": 100,
+                          "volume": 100, "atr": 2.0, "rsi": 55.0, "adx": 28.0, "vwap": 100.0, "relative_volume": 1.2} for t in dates])
+    cfg = {"capital": 30000, "risk_per_trade": 600, "symbols": ["NIFTY"], "net_costs": True}
+    replay = ResearchReplay(cfg, Settings(_env_file=None), {"NIFTY": {"lot_size": 10, "historical_verified": False}})
+    def signal(row, *args):
+        if row["timestamp"].strftime("%H:%M") != "09:30": return None
+        return {"id": "fixture-only", "symbol": "NIFTY", "option_type": "CALL", "stop_percent": .1, "target_percent": .2,
+                "setup": "fixture-only", "regime": "fixture-only", "agent_contexts": {"Scanner": "fixture-only"}}
+    replay.pipeline.signal = signal
+    book = {}; atm = defaultdict(set)
+    for t in dates:
+        hhmm = t.strftime("%H:%M")
+        atm[(t, "NIFTY", "CALL")].add(100)
+        price = 10 if hhmm <= "09:30" else 11
+        q = {"contract_id": "fixed-fixture", "strike": 101, "open": price, "high": price + .1, "low": price - .1, "close": price,
+             "volume": 100, "oi": 200, "option_type": "CALL", "expiry_bucket": "WEEK:1", "offsets": ["ATM+1" if hhmm <= "09:31" else "ATM"]}
+        if hhmm == "09:32": q.update(high=15, low=8)
+        book[(t, "NIFTY", "fixed-fixture")] = q
+    replay.consume(frame, book, atm, lambda: False)
+    result = replay.result([])
+    assert len(result["trades"]) == 1
+    trade = result["trades"][0]
+    assert trade["quality"] == "research_net"
+    assert trade["pnl_basis"] == "net"
+    assert trade["costs"] is not None and trade["costs"] > 0
+    assert trade["pnl"] == pytest.approx(trade["gross_pnl"] - trade["costs"])
+    assert result["metrics"]["total_pnl"] == pytest.approx(trade["pnl"])
+    assert result["metrics"]["total_charges"] == pytest.approx(trade["costs"])
+    assert "entry_features" in trade
+    assert trade["entry_features"]["schema"] == "entry_features_v1"
+
+    store = Store(tmp_path / "learning-net.db")
+    service = LearningService(store)
+    report = report_from_run(result, cfg)
+    train_res = service.train(report, "test-net-run")
+    assert train_res["eligible_trades"] == 1
+    assert train_res["excluded_trades"] == 0
+
+

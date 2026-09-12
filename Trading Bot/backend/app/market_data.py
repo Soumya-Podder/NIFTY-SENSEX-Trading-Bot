@@ -5,6 +5,7 @@ import hashlib
 import json
 import asyncio
 import uuid
+from collections import deque
 import requests
 import pandas as pd
 from datetime import datetime, timezone
@@ -53,6 +54,7 @@ class DhanMarketData:
         self.option_quotes={}
         self.credential_generation=0
         self.last_packet_at=None
+        self.recent_market_events=deque(maxlen=512)
         self.reconfigure_lock=threading.RLock()
 
     def refresh_credentials(self,client_id,access_token,force=False):
@@ -236,9 +238,8 @@ class DhanMarketData:
                     "ask":float(ask.get("ask_price",0)),"ask_qty":int(ask.get("ask_quantity",0)),
                     "ltp":float(packet.get("LTP",0)),"volume":packet.get("volume"),"oi":packet.get("OI")}
                 with self.lock: self.option_quotes[contract["contract_id"]]=quote
-                if self.store:
-                    self.store.put_record("market_events",f"depth:{received}:{contract['contract_id']}:{uuid.uuid4().hex}",
-                        {"event_type":"option_depth","received_at":received,"raw":packet,"normalized":quote,"source":"dhan_market_feed"})
+                with self.lock:
+                    self.recent_market_events.append({"event_type":"option_depth","received_at":received,"normalized":quote})
                 continue
             symbol = self.security_to_symbol.get(security_id)
             if not symbol or key[0]!=0:
@@ -266,7 +267,7 @@ class DhanMarketData:
                     self.last_sequence[security_id]=int(sequence)
                 except (TypeError,ValueError):
                     gap_status="unavailable"
-                self.store.put_record("market_events",f"feed:{received}:{security_id}:{uuid.uuid4().hex}",
+                self.recent_market_events.append(
                     {"event_type":"market_feed","received_at":received,"symbol":symbol,
                      "security_id":security_id,"sequence":sequence,"previous_sequence":previous,
                      "sequence_status":gap_status,
@@ -288,7 +289,8 @@ class DhanMarketData:
                 "option_subscriptions":len(self.option_contracts),"option_depth_quotes":len(self.option_quotes),
                 "options_by_symbol":{s:{"subscribed":sum(c["symbol"]==s for c in option_contracts),
                     "fresh_depth":sum(q["symbol"]==s and quote_is_fresh(q) for q in option_quotes)} for s in self.symbol_names},
-                "credential_generation":self.credential_generation}
+                "credential_generation":self.credential_generation,
+                "tick_storage":{"mode":"bounded_memory","capacity":512,"buffered":len(self.recent_market_events),"persistent_raw_websocket_ticks":False}}
 
 
 class DhanGateway:
@@ -498,7 +500,7 @@ class DhanGateway:
         raw=self.call(self.client.quote_data,groups,kind="quote")
         received=now_ist().isoformat(); result={}
         if self.store:
-            self.store.put_record("market_events",f"quote:{received}:{uuid.uuid4().hex}",
+            self.store.put_record("market_snapshots","latest_rest_quotes",
                 {"event_type":"quote_snapshot","received_at":received,"sequence_status":"unavailable",
                  "raw":raw,"source":"dhan_quote_snapshot"})
         for c in contracts:

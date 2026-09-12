@@ -47,4 +47,5 @@ def add_features(df):
     x["relative_volume"]=volume/vm.replace(0,np.nan)
     x["atr_percentile"]=x.atr.rolling(100,min_periods=20).rank(pct=True)
     x["vwap_distance_atr"]=(x.close-x.vwap)/x.atr.replace(0,np.nan)
+    x["ema_slope_atr"]=(x.ema21-x.ema21.shift(5))/x.atr.replace(0,np.nan)
     return x
