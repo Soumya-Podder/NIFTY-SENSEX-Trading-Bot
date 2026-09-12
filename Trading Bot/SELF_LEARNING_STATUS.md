@@ -92,3 +92,21 @@ Key parameters for learning behavior:
 - `LEARNING_MIN_TRADES=60` - minimum trades for training
 - `LLM_ENABLED=true` - LLM integration active
 - `OPENROUTER_API_KEY` - configured (starts with `***`)
+
+## CORRECTED (2026-09-12)
+- The 65-trade backtest is a SELECTED VERIFIED SUBSET (13 session days), not a continuous 5-year run.
+- The ~1,339 trading days in the 5yr CSV represent all available market days; ORB retest strategy selects only when conditions match (typically ~5/day on active setup days).
+- The backtest engine CANNOT run directly on index CSV (needs option_quotes). The verified report in DB IS the result.
+- To run continuously: need Dhan option contract download (rolling expired options with contract identity) or use existing verified report as reference.
+- Fix applied: csv_adapter.py created with documented limitation; no synthetic option contracts invented.
+
+
+## CORRECTED MULTI-STRATEGY UNDERSTANDING (2026-09-12)
+- User clarification: NOT 1 strategy — 3 strategies run continuously (orb_retest, trend_pullback, range_rejection)
+- MultiStrategyPaperEngine selects best eligible offer across both indices (NIFTY + SENSEX)
+- Continuous 2-sec scan; 09:15 entry start, 14:30 stop, 15:05 exit
+- Self-teaching mechanism exists (LearningService + adaptive_exit + agent contexts + LLM)
+- Blocked at Phase 2: 60 verified trades needed; 0 eligible from endpoint (weekend/data format)
+- Validated model (Setup v2) promoted — can score entries when frozen; not yet loaded in session
+- To become fully self-teaching: accumulate live trades → train → validate → replay → promote
+- The 65 verified backtest trades represent SELECTED best entries, not continuous; 1,339 trading days in CSV
