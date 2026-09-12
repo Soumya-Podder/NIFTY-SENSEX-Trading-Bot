@@ -1050,6 +1050,8 @@ function Report({ report, onDetail }: Data) {
  const m = report.metrics || {};
  const valid = report.quality === "verified";
  const research = report.quality === "research";
+ const netResearch = report.quality === "research_net";
+ const invalidated = report.status === "invalidated";
 
  const [cache, setCache] = useState<Data | null>(null);
 
@@ -1072,6 +1074,10 @@ function Report({ report, onDetail }: Data) {
      <h2>
       {valid ?
        "Simulation results"
+      : invalidated ?
+       "Invalidated synthetic option report"
+      : netResearch ?
+       "Estimated net research · current-lot scenario"
       : research ?
        "Gross research · current-lot scenario"
       : "Data quality blocked"}
@@ -1130,6 +1136,10 @@ function Report({ report, onDetail }: Data) {
      <p>
       {valid ?
        `Net simulation outcome: ${money(m.total_pnl)}. This is historical evidence, not a daily profit guarantee.`
+      : invalidated ?
+       "This report used synthetic option prices. Its performance and learning claims are invalid; the original record is retained for audit."
+      : netResearch && report.status === "research_complete" ?
+       `Estimated net scenario: ${money(m.total_pnl)}. Fees are assumptions; this is not a validated execution replay or proven edge.`
       : research && report.status === "research_complete" ?
        `Gross current-lot scenario: ${money(m.gross_pnl)} across ${m.sessions} observed sessions. After-charges profitability is not established.`
       : "The selected range has incomplete evidence. Partial trades are shown, but full-range profitability is not established."
@@ -1231,7 +1241,7 @@ function Report({ report, onDetail }: Data) {
     </>
    )}
 
-   {valid && (
+   {(valid || netResearch) && (
     <>
      <section className="metric-grid">
       <Kpi

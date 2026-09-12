@@ -32,11 +32,8 @@ def plan_protection(signal, contract, retest_quote, entry_price, reward_multiple
     if not all(finite(v) and v > 0 for v in (tick, low, entry_price)):
         raise ValueError("Invalid observed protection inputs")
     if min_stop > 0:
-        lot = int(contract.get("lot_size", 50))
         raw_dist = entry_price - (low - tick) if low < entry_price else 0.
-        structural_dist = max(raw_dist, min_stop)
-        max_stop_dist = 500.0 / lot
-        stop_dist = min(structural_dist, max_stop_dist)
+        stop_dist = max(raw_dist, min_stop)
         stop = round(math.floor((entry_price - stop_dist + 1e-10) / tick) * tick, 8)
         if not 0 < stop < entry_price:
             raise ValueError("Structural option stop is not below the proposed entry")

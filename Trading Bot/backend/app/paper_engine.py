@@ -161,8 +161,11 @@ class PaperEngine:
                 import logging
                 logging.getLogger("paper_engine").exception("Paper engine cycle error: %s", exc)
                 if consecutive_errors >= 2:
-                    self.broker.control(halted=True, reason="Paper engine error; exits remain active")
-                    self.publish(event("Risk", "PORTFOLIO", "REJECTED", f"Paper engine error: {str(exc)[:150]}", evaluation={"error": str(exc)[:300]}))
+                    try:
+                        self.broker.control(halted=True, reason="Paper engine error; exits remain active")
+                        self.publish(event("Risk", "PORTFOLIO", "REJECTED", f"Paper engine error: {str(exc)[:150]}", evaluation={"error": str(exc)[:300]}))
+                    except Exception as persist_exc:
+                        self.status["persistence_error"]=type(persist_exc).__name__
             self.stop_event.wait(2)
 
     def cycle(self):
@@ -188,7 +191,13 @@ class PaperEngine:
             for cid,q in streamed.items():
                 previous=quotes.get(cid,{})
                 quotes[cid]={**q,"exit_cost_estimate":previous.get("exit_cost_estimate") if previous.get("bid")==q.get("bid") else None}
-        self.broker.mark(quotes,now)
+        try:
+            self.broker.mark(quotes,now)
+            self.status["persistence_error"]=None
+        except Exception as exc:
+            # A failed valuation write must not prevent an observed protective exit.
+            # Broker rollback preserves the last durable account; entries stay blocked.
+            self.status["persistence_error"]=type(exc).__name__
         account=self.broker.snapshot()
         limit=min(self.settings.daily_loss_limit_rupees,self.settings.hard_daily_halt_rupees)
         if account["session_pnl"]<=-limit:
@@ -202,7 +211,7 @@ class PaperEngine:
                 fresh=quote_is_fresh(q,now,self.settings.max_quote_age_seconds)
                 under=(self.market.snapshot().get("symbols",{}).get(p["symbol"],{}) if self.market else {})
                 underlying=under.get("ltp") if quote_is_fresh(under,now,self.settings.max_quote_age_seconds) else None
-                reason=plan_exit(p,now,bid=q.get("bid") if fresh else None,underlying=underlying,halted=self.broker.state["halted"],close_start=self.settings.session_exit)
+                reason=plan_exit(p,now,bid=q.get("bid") if fresh else None,underlying=underlying,halted=self.broker.state["halted"] or bool(self.status.get("persistence_error")),close_start=self.settings.session_exit)
             elif session not in {"ENTRY_WINDOW","MANAGE_ONLY"}: reason="SESSION_EXIT"
             elif self.broker.state["halted"]: reason="RISK_HALT"
             elif quote_is_fresh(q,now,self.settings.max_quote_age_seconds):

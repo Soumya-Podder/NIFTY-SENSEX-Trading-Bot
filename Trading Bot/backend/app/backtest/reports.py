@@ -34,6 +34,8 @@ def report_from_run(result, config):
     return json_safe({"status":result.get("status", "complete" if result.get("quality")=="verified" else "data_blocked"),
         "quality":result.get("quality","incomplete"),"source":result.get("source","contract_specific_candles"),
         "replay_version":result.get("replay_version"),
+        "strategy_mode":result.get("strategy_mode"),"selection_mode":result.get("selection_mode"),
+        "parity_limitations":result.get("parity_limitations",[]),
         "strategy_version":result.get("strategy_version",config.get("strategy_version")),
         "fidelity":result.get("fidelity"),"deployment_ready":result.get("deployment_ready",False),
         "evidence_status":result.get("evidence_status"),"risk_policy":result.get("risk_policy"),

@@ -1,6 +1,7 @@
 import uuid
 import threading
 import math
+from copy import deepcopy
 from datetime import datetime,timezone,timedelta
 from .session import now_ist, local_time, quote_is_fresh, session_state
 
@@ -11,6 +12,8 @@ class PaperBroker:
         self.entry_cutoff=entry_cutoff
         self.policy=policy
         self.lock=threading.RLock()
+        self.persistence_error=None
+        self._committed_state=None
         self.state=(store.get_record("paper","account") if store else None) or {
             "initial_capital":capital,"cash":capital,"positions":[],"realized_pnl":0,
             "charges":0,"session_date":str(local_time(self.clock()).date()),"session_start_equity":capital,
@@ -29,9 +32,17 @@ class PaperBroker:
         self._persist()
 
     def _persist(self,*records):
-        if self.store: self.store.save_bundle([("paper","account",self.state),*records])
+        try:
+            if self.store: self.store.save_bundle([("paper","account",self.state),*records])
+        except Exception as exc:
+            if self._committed_state is not None:
+                self.state=deepcopy(self._committed_state)
+            self.persistence_error=type(exc).__name__
+            raise
+        self._committed_state=deepcopy(self.state)
+        self.persistence_error=None
 
-    def health(self): return {"healthy":True,"mode":"paper","simulated_execution":True}
+    def health(self): return {"healthy":self.persistence_error is None,"mode":"paper","simulated_execution":True,"persistence_error":self.persistence_error}
 
     def positions(self):
         with self.lock: return {"quantity":sum(p["qty"] for p in self.state["positions"]),"positions":[dict(p) for p in self.state["positions"]]}
@@ -120,6 +131,7 @@ class PaperBroker:
     def place_order(self,*,contract,quote,quantity,signal,now=None):
         now=local_time(now or now_ist())
         with self.lock:
+            if self.persistence_error: raise ValueError("Paper entries paused: account persistence recovery required")
             if self.state["halted"] or not self.state["enabled"]: raise ValueError("Paper entries paused")
             if session_state(self.clock(),cutoff=self.entry_cutoff)!="ENTRY_WINDOW": raise ValueError("Outside paper entry window")
             if not contract.get("identity_verified") or str(contract.get("expiry",""))[:10]<str(now.date()):
@@ -225,7 +237,12 @@ class PaperBroker:
                     ledger["losses"]+=int(episode["pnl"]<0); ledger["last_exit"]=now.isoformat()
             if self.policy: self.state["loss_ledger"]["gross_realized"]+=gross
             self._persist(*records)
-            if self.policy and not remaining: self.mark({},now)
+            if self.policy and not remaining:
+                try: self.mark({},now)
+                except Exception:
+                    # The fill above is durable. A later valuation failure is
+                    # exposed by health and must not masquerade as a failed fill.
+                    pass
             return trade
 
 class DhanBroker:

@@ -2,8 +2,9 @@
 import math
 from collections import defaultdict
 from statistics import NormalDist, mean, stdev
+from .provenance import has_synthetic_options
 
-VERSION = "learning_guard_v1"
+VERSION = "learning_guard_v2"
 MIN_TRAIN = 60
 MIN_TEST = 30
 MIN_DAYS = 34
@@ -13,6 +14,8 @@ def replay_evidence(candidate, baseline, start, end, trials=1):
     reasons = []
     daily = []
     for report in (candidate, baseline):
+        if has_synthetic_options(report):
+            reasons.append("Synthetic option evidence is not eligible for promotion")
         if (report.get("quality") != "verified" or report.get("issues") or report.get("partial")
                 or report.get("unresolved_positions") or report.get("unresolved")
                 or report.get("status", "complete") != "complete"):

@@ -22,7 +22,15 @@ def plan_account(tmp_path):
     return broker,store,clock
 
 
-def test_paper_toggle_is_explicit_and_never_live(monkeypatch):
+def test_paper_toggle_is_explicit_and_never_live(monkeypatch,tmp_path):
+    # main constructs its service at import: redirect every constructor before
+    # import so this API test cannot persist into the user's paper account.
+    import app.store as store_module
+    import app.autonomous_agent as autonomous_module
+    isolated=lambda *args,**kwargs: Store(tmp_path/"api-test.db")
+    monkeypatch.setattr(store_module,"Store",isolated)
+    monkeypatch.setattr(autonomous_module,"Store",isolated)
+    monkeypatch.setattr(autonomous_module,"_agent_instance",None)
     from app import main
 
     class ToggleOnlyPaper:

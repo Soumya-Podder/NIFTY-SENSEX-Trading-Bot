@@ -67,6 +67,8 @@ def build_evidence(store, deployed, policies, training=False):
     alerts = []
     if not deployed:
         alerts.append("No learned entry model is deployed in the current engine session.")
+    if any(r.get("status") == "REJECTED_SYNTHETIC_DATA" for r in runs):
+        alerts.append("Synthetic option history has been rejected from learning; legacy verified labels do not establish genuine option outcomes.")
     if any(m.get("status") == "HOLDOUT_ALREADY_USED" for r in runs for m in r.get("models", [])):
         alerts.append("Repeated historical holdout attempts exist; reuse is not new learning evidence.")
     if any(m.get("overfitting_checks", {}).get("version") != VERSION for m in models):

@@ -3,6 +3,7 @@ import sqlite3
 import time
 import zlib
 import math
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -48,10 +49,15 @@ class Store:
                 metadata_json TEXT NOT NULL
             )""")
 
+    @contextmanager
     def _conn(self, timeout=30):
         c = sqlite3.connect(self.path, timeout=timeout)
-        c.execute("PRAGMA busy_timeout=30000")
-        return c
+        try:
+            c.execute(f"PRAGMA busy_timeout={int(timeout*1000)}")
+            with c:
+                yield c
+        finally:
+            c.close()
 
     def save_decision(self, p):
         with self._conn() as c:
@@ -143,16 +149,19 @@ class Store:
 
     def save_bundle(self, items):
         stamp=datetime.now(timezone.utc).isoformat()
-        for attempt in range(3):
+        items=list(items)
+        account_write=any(namespace=="paper" and key=="account" for namespace,key,_ in items)
+        attempts=1 if account_write else 3
+        for attempt in range(attempts):
             try:
-                with self._conn() as c:
+                with self._conn(timeout=.25 if account_write else 30) as c:
                     c.execute("BEGIN IMMEDIATE")
                     for namespace,key,payload in items:
                         c.execute("INSERT INTO records VALUES(?,?,?,?) ON CONFLICT(namespace,key) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at",
                                   (namespace,str(key),json.dumps(json_safe(payload),allow_nan=False),stamp))
                 return
             except sqlite3.OperationalError as e:
-                if "locked" in str(e).lower() and attempt < 2:
+                if "locked" in str(e).lower() and attempt < attempts-1:
                     time.sleep(0.25 * (attempt + 1))
                     continue
                 raise

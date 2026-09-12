@@ -12,6 +12,7 @@ import httpx
 from .session import now_ist, local_time
 from .config import settings
 from .learning_validation import VERSION as GUARD_VERSION, MIN_TRAIN, MIN_TEST, MIN_DAYS, replay_evidence
+from .provenance import has_synthetic_options
 
 SCHEMA = "entry_features_v1"
 FEATURES = ("adx", "atr_pct", "vwap_dist_atr", "relative_volume", "ema_slope_atr",
@@ -123,11 +124,12 @@ class LearningService:
     def _train(self, report, run_id, replay):
         now = now_ist()
         outcomes = report.get("trades", [])
+        synthetic = has_synthetic_options(report)
         eligible = []
         for t in outcomes:
             f = t.get("entry_features") or {}
             try:
-                valid = (report.get("quality") in {"verified", "research_net"} and report.get("pnl_basis", "net") == "net" and t.get("quality") in {"verified", "research_net"} and not t.get("partial") and
+                valid = (not synthetic and report.get("quality") in {"verified", "research_net"} and report.get("pnl_basis", "net") == "net" and t.get("quality") in {"verified", "research_net"} and not t.get("partial") and
                     f.get("schema") == SCHEMA and isinstance(f.get("values"), dict) and
                     sum(number(f["values"].get(k)) is not None for k in FEATURES) >= 6 and
                     all(number(t.get(k)) is not None for k in ("pnl", "gross_pnl", "costs")) and t["costs"] >= 0 and
@@ -144,6 +146,8 @@ class LearningService:
                   "dataset_id": report.get("config", {}).get("dataset_id"),
                   "dataset_fingerprint": hashlib.sha256(json.dumps(eligible, sort_keys=True, default=str).encode()).hexdigest(),
                   "reason": "Require causal entry features, completed verified net-cost trades and independent session history"}
+        if synthetic:
+            result.update(status="REJECTED_SYNTHETIC_DATA", reason="Legacy synthetic option outcomes are quarantined from training and promotion")
         for key in sorted({scope(t) for t in eligible}):
             group = sorted([t for t in eligible if scope(t) == key], key=lambda t: local_time(t["entry_ts"]))
             # Deduplicate positions; reports can contain repeated partial fills.

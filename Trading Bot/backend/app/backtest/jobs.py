@@ -14,6 +14,7 @@ from ..telemetry.agent_metrics import learn_from_outcomes
 from ..market_data import HISTORY_CACHE_ONLY
 from ..risk import PlanRiskPolicy
 from ..ai import LearningService
+from .strategy_signals import MODES
 
 ACTIVE={"queued","running","cancelling"}
 ARCHIVE_STRIKE_OFFSETS=("ATM","ATM-4","ATM-3","ATM-2","ATM-1","ATM+1","ATM+2","ATM+3","ATM+4")
@@ -127,6 +128,11 @@ class BacktestJobs:
     def start(self,config):
         with self.lock:
             if self.worker and self.worker.is_alive(): raise ValueError("A backtest is already running")
+            strategy_mode=config.get("strategy_mode")
+            if strategy_mode is not None and strategy_mode not in MODES:
+                raise ValueError("Unknown strategy replay mode")
+            if strategy_mode and config.get("source")!="csv":
+                raise ValueError("Individual/portfolio replay requires observed exact-contract CSV data; rolling Dhan research does not yet provide equivalent execution inputs")
             config=resolve_backtest_budgets(config,self.settings)
             self.cancel_event=threading.Event()
             self.finalizing=False
@@ -191,9 +197,9 @@ class BacktestJobs:
                 cfg=BacktestConfig(initial_capital=config["capital"],risk_per_trade=config["risk_per_trade"],
                     daily_loss_limit=config.get("daily_loss_limit",self.settings.daily_loss_limit_rupees),correlated_risk_limit=config.get("correlated_risk_limit",self.settings.max_correlated_risk_rupees),
                     max_positions=self.settings.max_open_positions,daily_target=self.settings.daily_profit_target,
-                    entry_cutoff=self.settings.entry_cutoff,exit_at=self.settings.session_exit,adaptive_exits=False,
-                    horizon_minutes=60,min_stop=8.0,invalidation_buffer=25.0)
-                if config.get("strategy_version")=="orb-retest-v1":
+                    entry_cutoff=self.settings.entry_cutoff,exit_at=self.settings.session_exit,adaptive_exits=bool(config.get("strategy_mode")),
+                    horizon_minutes=10,min_stop=0.0,invalidation_buffer=0.0,strategy_mode=config.get("strategy_mode"))
+                if config.get("strategy_version")=="orb-retest-v1" or cfg.strategy_mode:
                     # Research inputs are editable; do not cap them to the paper
                     # account. Preserve the declared allocation/reserve ratios.
                     base=PlanRiskPolicy.from_settings(self.settings)

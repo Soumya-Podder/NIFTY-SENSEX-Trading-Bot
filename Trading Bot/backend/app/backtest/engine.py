@@ -12,6 +12,9 @@ from ..risk import available_risk,PlanRiskPolicy
 from ..setups import opening_range_retest
 from ..ai import extract_features, MLTradeQualityModel, scope
 from ..adaptive_exit import update_exit, VERSION as ADAPTIVE_EXIT_VERSION
+from ..provenance import has_synthetic_options
+from .strategy_signals import historical_signals
+from ..strategy_portfolio import PORTFOLIO_VERSION, STRATEGIES, rank_opportunities
 
 
 @dataclass
@@ -34,6 +37,7 @@ class BacktestConfig:
     ml_artifact: dict | None=None
     min_stop: float=0.
     invalidation_buffer: float=0.
+    strategy_mode: str | None=None
 
 
 class BacktestEngine:
@@ -43,6 +47,8 @@ class BacktestEngine:
     def run(self,df,cancel=None,progress=None):
         cfg=self.cfg
         policy=cfg.plan_policy
+        if cfg.strategy_mode and policy is None:
+            raise ValueError("Portfolio strategy replay requires an explicit shared risk policy")
         pipeline=DecisionPipeline(cfg.learning_policies)
         if "symbol" not in df: df=df.assign(symbol="UNKNOWN")
         x=pipeline.features(df)
@@ -50,6 +56,7 @@ class BacktestEngine:
         day=None; baseline=cash; halted=False; cooldown={}; last_quotes={}; closed_count=0
         openings={}; records=x.to_dict("records") if not x.empty else []
         plan_candidates={}; option_history={}; consumed=set(); opportunities=[]
+        portfolio_signals=historical_signals(df,cfg.strategy_mode,cancel or (lambda:False)) if cfg.strategy_mode else {}
         if policy:
             for (session,symbol),frame in x.groupby(["session","symbol"]):
                 for candidate in opening_range_retest(frame,frame.timestamp.max()+timedelta(minutes=1),all_candidates=True):
@@ -64,6 +71,8 @@ class BacktestEngine:
             return self._result([],[],[],[],["No contract-specific option candles"],pipeline)
         for r in records:
             for q in r.get("option_quotes") or []:
+                if has_synthetic_options(q):
+                    return self._result([],[],[],[],["Synthetic option data cannot validate execution or learning"],pipeline)
                 if not q.get("identity_verified") or any(k not in q for k in ("contract_id","expiry","strike","lot_size","tick_size","is_atm","charge_schedule")):
                     return self._result([],[],[],[],["Unverified contract identity or historical charges"],pipeline)
 
@@ -131,7 +140,7 @@ class BacktestEngine:
                 if policy:
                     if str(q["expiry"])[:10]<=date: continue
                     try:
-                        signal=plan_protection(signal,q,selected.get("retest_quote"),price,cfg.reward_multiple,cfg.horizon_minutes,cfg.min_stop)
+                        signal=plan_protection(signal,q,selected.get("retest_quote"),price,cfg.reward_multiple,signal.get("horizon_minutes",cfg.horizon_minutes) if cfg.strategy_mode else cfg.horizon_minutes,cfg.min_stop)
                     except ValueError as exc:
                         opportunities.append({"signal_id":signal["id"],"timestamp":stamp,"status":"REJECTED","reason":str(exc)})
                         continue
@@ -173,6 +182,7 @@ class BacktestEngine:
                     "agent_contexts":contexts,"policy_versions":signal["policy_versions"],"mae":0,"mfe":0}
                 positions[q["contract_id"]].update(entry_features=entry_features,
                     strategy_version=signal.get("strategy_version"),option_atr=signal.get("option_atr"))
+                positions[q["contract_id"]].update({k:signal.get(k) for k in ("strategy_id","strategy_name","portfolio_version","underlying_target")})
                 if policy:
                     positions[q["contract_id"]].update(stop=signal["stop_price"],target=signal["target_price"],
                         invalidation=signal["invalidation"],horizon_minutes=signal["horizon_minutes"],
@@ -238,6 +248,7 @@ class BacktestEngine:
             for row in rows:
                 for q in row.get("option_quotes") or []: option_history[(q["contract_id"],stamp.isoformat())]=q
             if state!="ENTRY_WINDOW" or halted: continue
+            offers=[]
             for row in rows:
                 symbol=row["symbol"]
                 if cooldown.get(symbol,stamp)>stamp or any(p["symbol"]==symbol for p in positions.values()): continue
@@ -245,37 +256,54 @@ class BacktestEngine:
                 if "09:15"<=stamp.strftime("%H:%M")<"09:30":
                     openings.setdefault(opening_key,[]).append(row)
                 opening=openings.get(opening_key,[])
-                signal=(pipeline.plan_candidate(plan_candidates.get((stamp.isoformat(),symbol)),symbol) if policy else
-                        pipeline.signal(row,max((r["high"] for r in opening),default=None),min((r["low"] for r in opening),default=None),len(opening)))
-                if not signal: continue
-                signal["feature_row"]=row
-                if policy:
-                    if signal["id"] in consumed: continue
-                    consumed.add(signal["id"])
-                    veto=policy.entry_veto(ledger,stamp+timedelta(minutes=1))
-                    opportunities.append({**signal,"status":"REJECTED" if veto else "CANDIDATE","reason":veto})
-                    if veto: continue
-                selected=pipeline.option_candidates(signal,row.get("option_quotes") or [],cash,stamp,historical=True)
-                for candidate in selected:
-                    lot=candidate["lot_size"]; price=candidate["close"]+candidate["tick_size"]
-                    try:
-                        if policy:
-                            if str(candidate["expiry"])[:10]<=date: continue
-                            retest_quote=option_history.get((candidate["contract_id"],signal["retest_timestamp"]))
-                            from ..indicators import atr as option_atr
-                            previous_bars=[{**v,"timestamp":t} for (cid,t),v in option_history.items() if cid==candidate["contract_id"] and pd.Timestamp(t)<=pd.Timestamp(signal["retest_timestamp"])]
-                            if len(previous_bars)>=14:
-                                history=pd.DataFrame(previous_bars).sort_values("timestamp")
-                                signal["option_atr"]=float(option_atr(history).iloc[-1])
-                            signal=plan_protection(signal,candidate,retest_quote,price,cfg.reward_multiple,cfg.horizon_minutes,cfg.min_stop)
-                            candidate={**candidate,"retest_quote":retest_quote}
-                        buy=CostModel.historical(candidate,price,lot,"buy",stamp)
-                        exit_price=max(candidate["tick_size"],price*(1-signal["stop_percent"])-candidate["tick_size"])
-                        sell=CostModel.historical(candidate,exit_price,lot,"sell",stamp)
-                    except ValueError as exc:
-                        errors.append(str(exc)); continue
-                    if price*lot+buy["total"]<=cash and (price-exit_price)*lot+buy["total"]+sell["total"]<=cfg.risk_per_trade:
-                        pending[symbol]=(signal,candidate); break
+                signals=(portfolio_signals.get((stamp.isoformat(),symbol),[]) if cfg.strategy_mode else
+                         [pipeline.plan_candidate(plan_candidates.get((stamp.isoformat(),symbol)),symbol) if policy else
+                          pipeline.signal(row,max((r["high"] for r in opening),default=None),min((r["low"] for r in opening),default=None),len(opening))])
+                for signal in signals:
+                    if not signal: continue
+                    signal.setdefault("feature_row",row)
+                    if policy:
+                        if signal["id"] in consumed: continue
+                        consumed.add(signal["id"])
+                        veto=policy.entry_veto(ledger,stamp+timedelta(minutes=1))
+                        opportunities.append({**signal,"status":"REJECTED" if veto else "CANDIDATE","reason":veto})
+                        if veto: continue
+                    selected=pipeline.option_candidates(signal,row.get("option_quotes") or [],cash,stamp,historical=True)
+                    for candidate in (selected[:3] if cfg.strategy_mode else selected):
+                        lot=candidate["lot_size"]; price=candidate["close"]+candidate["tick_size"]
+                        try:
+                            if policy:
+                                if str(candidate["expiry"])[:10]<=date: continue
+                                retest_quote=option_history.get((candidate["contract_id"],signal["retest_timestamp"]))
+                                from ..indicators import atr as option_atr
+                                previous_bars=[{**v,"timestamp":t} for (cid,t),v in option_history.items() if cid==candidate["contract_id"] and pd.Timestamp(t)<=pd.Timestamp(signal["retest_timestamp"])]
+                                if len(previous_bars)>=14:
+                                    history=pd.DataFrame(previous_bars).sort_values("timestamp")
+                                    signal["option_atr"]=float(option_atr(history).iloc[-1])
+                                signal=plan_protection(signal,candidate,retest_quote,price,cfg.reward_multiple,signal.get("horizon_minutes",cfg.horizon_minutes) if cfg.strategy_mode else cfg.horizon_minutes,cfg.min_stop)
+                                candidate={**candidate,"retest_quote":retest_quote}
+                            buy=CostModel.historical(candidate,price,lot,"buy",stamp)
+                            exit_price=max(candidate["tick_size"],price*(1-signal["stop_percent"])-candidate["tick_size"])
+                            sell=CostModel.historical(candidate,exit_price,lot,"sell",stamp)
+                        except ValueError as exc:
+                            errors.append(str(exc)); continue
+                        if price*lot+buy["total"]<=cash and (price-exit_price)*lot+buy["total"]+sell["total"]<=cfg.risk_per_trade:
+                            if cfg.strategy_mode:
+                                risk=(price-exit_price)*lot+buy["total"]+sell["total"]
+                                target=signal["target_price"]
+                                reward=(target-price)*lot-buy["total"]-CostModel.historical(candidate,target,lot,"sell",stamp)["total"]
+                                if reward/risk<1: continue
+                                offers.append({"signal":dict(signal),"selected":candidate,
+                                               "contract":{**candidate,"spread_pct":candidate.get("spread_pct",float("inf"))},
+                                               "risk":risk,"net_reward_risk":reward/risk,"ev":{"status":"OBSERVATION"}})
+                            else:
+                                pending[symbol]=(signal,candidate); break
+            if cfg.strategy_mode and offers:
+                ranked=rank_opportunities(offers)
+                best=ranked[0]
+                pending={best["signal"]["symbol"]:(best["signal"],best["selected"])}
+                opportunities.append({"timestamp":stamp,"status":"SELECTED", "signal_id":best["signal"]["id"],
+                                      "ranking":"shared net reward/risk; missing spread ranks last", "eligible_offers":len(ranked)})
         if positions and not errors and curve:
             stamp=curve[-1]["timestamp"]
             for cid,p in list(positions.items()):
@@ -286,9 +314,15 @@ class BacktestEngine:
         result=self._result(trades,curve,daily,list(positions.values()),errors,pipeline)
         if policy:
             result.update(opportunities=opportunities,loss_ledger=ledger,
-                          strategy_version="orb-retest-v1",risk_policy=policy.describe(),
+                          strategy_version=PORTFOLIO_VERSION if cfg.strategy_mode=="portfolio" else next((s["version"] for s in STRATEGIES if s["id"]==cfg.strategy_mode),"orb-retest-v1"),risk_policy=policy.describe(),
                           fidelity="preliminary_fixed_contract_minute",deployment_ready=False,
                           evidence_status="BASELINE_RESEARCH_NOT_VALIDATED_EDGE")
+        if cfg.strategy_mode:
+            result.update(strategy_mode=cfg.strategy_mode, replay_version="portfolio-candle-v1",
+                          selection_mode="frozen_observation_economics",
+                          parity_limitations=["Minute candles do not reconstruct the two-second bid/ask path.",
+                                              "Historical selection uses dated fees and candle prices; unavailable spreads are not invented.",
+                                              "Forward expectancy is not inferred from later trades; this replay uses frozen observation ranking."])
         return result
 
     def _result(self,trades,curve,daily,unresolved,errors,pipeline):

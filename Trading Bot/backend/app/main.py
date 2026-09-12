@@ -22,6 +22,8 @@ from .telemetry.event_bus import event_bus
 from .risk import PlanRiskPolicy
 from .ai import LearningService, get_analysts
 from .learning_monitor import LearningMonitor
+from .provenance import reviewed_report
+from .runtime_health import execution_health
 from .autonomous_agent import AutonomousTradingAgent, get_autonomous_agent
 import threading
 import uuid
@@ -43,6 +45,7 @@ llm_client = analysts.get("llm_client")
 # Autonomous agent
 autonomous_agent = get_autonomous_agent(ROOT)
 autonomous_agent.set_dependencies(paper, market_data, engine)
+autonomous_agent.backtest_jobs = jobs
 learning_monitor = LearningMonitor(store, engine, ml_learning, ROOT/".env", autonomous_agent)
 
 
@@ -97,6 +100,7 @@ class BacktestRequest(BaseModel):
     daily_loss_limit:float|None=Field(default=None,gt=0,allow_inf_nan=False)
     correlated_risk_limit:float|None=Field(default=None,gt=0,allow_inf_nan=False)
     dataset:str=""
+    strategy_mode:Literal["orb_retest","trend_pullback","range_rejection","portfolio"]|None=None
 
 
 class LearningReview(BaseModel):
@@ -107,7 +111,7 @@ class LearningReview(BaseModel):
 
 def last_report():
     pointer=store.get_record("backtest","latest",{})
-    return store.get_record("reports",pointer.get("report_id",""),{"status":"not_run","metrics":{},"trades":[]})
+    return reviewed_report(store.get_record("reports",pointer.get("report_id",""),{"status":"not_run","metrics":{},"trades":[]}))
 
 
 @app.get("/api/learning/model")
@@ -255,7 +259,8 @@ def set_mode(request:ModeRequest):
 
 @app.get("/api/health")
 def health():
-    return json_safe(redacted({"app":"healthy",**mode(),"engine":engine.status,"broker":paper.health(),"market_data":market_data.snapshot()}))
+    runtime=execution_health(engine,paper)
+    return json_safe(redacted({"app":"healthy" if runtime["healthy"] else "degraded",**mode(),"runtime":runtime,"engine":engine.status,"broker":paper.health(),"market_data":market_data.snapshot()}))
 
 
 @app.get("/api/risk")
@@ -420,6 +425,7 @@ def run_backtest(request:BacktestRequest):
     config={"source":request.source,"symbols":["NIFTY","SENSEX"] if request.underlying=="PARALLEL" else [request.underlying],
         "underlying":request.underlying,"from":str(start),"to":str(end),"years":request.years,"days":request.days,
         "capital":request.capital,"risk_per_trade":request.risk_per_trade,"dataset":request.dataset,
+        "strategy_mode":request.strategy_mode,
         "daily_loss_limit":request.daily_loss_limit,"correlated_risk_limit":request.correlated_risk_limit,
         "interval":1,"strategy_version":"orb-retest-v1","selection":"automatic_non_atm",
         "entry_cutoff":settings.entry_cutoff,"session_exit":settings.session_exit,
@@ -479,7 +485,7 @@ def latest_report(): return last_report()
 def get_report(identifier:str):
     report=store.get_record("reports",identifier)
     if not report: raise HTTPException(404,detail="Unknown report")
-    return report
+    return reviewed_report(report)
 
 
 @app.websocket("/api/ws")

@@ -101,7 +101,7 @@ class ResearchReplay:
                 p = positions.pop(symbol); pnl = (price - p["entry_premium"]) * p["quantity"]
                 costs = CostModel.estimate_round_trip(p["entry_premium"], price, p["quantity"]) if self.net else None
                 net_pnl = round(pnl - costs, 2) if self.net else None
-                self.cash += price * p["quantity"]
+                self.cash += price * p["quantity"] + p.get("cost_reserve", 0) - (costs or 0)
                 trade_pnl = net_pnl if self.net else pnl
                 realized += trade_pnl; count += 1
                 loss_spend+=max(0.,-trade_pnl); losses+=int(trade_pnl<0); last_exit=stamp
@@ -182,17 +182,25 @@ class ResearchReplay:
                         budget=min(budget,max(0.,allocation-loss_spend-used_risk))
                     qty = int(min(self.cash / (entry*lot), budget / (risk_unit*lot))) * lot
                     if self.plan: qty=min(qty,lot)
+                    reserve=0.
+                    if self.net:
+                        while qty>=lot:
+                            reserve=CostModel.estimate_round_trip(entry,entry-risk_unit,qty)
+                            if entry*qty+reserve<=self.cash and risk_unit*qty+reserve<=budget:
+                                break
+                            qty-=lot
+                        if qty<lot: reserve=0.
                     if self.plan and (entry*qty>self.config["capital"]*self.settings.max_premium_commitment_rupees/self.settings.paper_capital or
-                        self.cash-entry*qty<self.config["capital"]*self.settings.cash_reserve_rupees/self.settings.paper_capital): qty=0
+                        self.cash-entry*qty-reserve<self.config["capital"]*self.settings.cash_reserve_rupees/self.settings.paper_capital): qty=0
                     allowed = qty >= lot and len(positions) < self.settings.max_open_positions
-                    self.pipeline.stage("Risk", symbol, "PASS" if allowed else "REJECTED", "Shared cash and gross stop-risk limits (fees unknown)", "research_gross_risk")
+                    self.pipeline.stage("Risk", symbol, "PASS" if allowed else "REJECTED", "Shared cash and stop-risk limits with estimated cost reserve" if self.net else "Shared cash and gross stop-risk limits (fees unknown)", "research_estimated_net_risk" if self.net else "research_gross_risk")
                     if not allowed: continue
-                    self.cash -= entry*qty
+                    self.cash -= entry*qty+reserve
                     entries+=1
                     feats = extract_features(
                         signal.get("signal_features", {}),
                         signal,
-                        {**q, "ask": entry, "spread_pct": 0.01},
+                        {**q, "ask": entry},
                         stamp
                     )
                     p = {**signal, "id":signal["id"], "contract_id":q["contract_id"], "expiry":None,
@@ -201,12 +209,12 @@ class ResearchReplay:
                          "strategy_version":self.config.get("strategy_version") or "orb-retest-v1",
                          "exit_policy":"orb-retest-v1" if self.plan else "fixed_target_stop",
                          "entry_features":feats,
-                         "entry_premium":entry, "quantity":qty,
+                         "entry_premium":entry, "quantity":qty, "cost_reserve":reserve,
                          "lot_scenario":self.lots[symbol], "stop":entry-risk_unit,
-                         "sizing_audit":{"cash_before":self.cash+entry*qty,"premium_committed":entry*qty,
+                         "sizing_audit":{"cash_before":self.cash+entry*qty+reserve,"premium_committed":entry*qty,
                             "risk_budget":budget,"stop_risk":risk_unit*qty,"correlated_risk_before":correlated,
-                            "daily_realized_gross_before":realized,"charges_included":True},
-                         "target":entry*(1+signal["target_percent"]), "risk":risk_unit*qty,
+                            "daily_realized_before":realized,"charges_included":bool(self.net),"estimated_cost_reserve":reserve},
+                         "target":entry*(1+signal["target_percent"]), "risk":risk_unit*qty+reserve,
                          "mark":q["close"], "last_offsets":q["offsets"], "entry_offsets":q["offsets"],
                          "agent_contexts":{**signal["agent_contexts"], "Option Selector":"rolling_non_atm_budget",
                             "EV":"research_net_ev", "Risk":"research_net_risk", "Execution":execution_context(stamp)}}
