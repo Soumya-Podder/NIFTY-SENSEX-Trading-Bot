@@ -57,7 +57,7 @@ class MultiStrategyPaperEngine(PaperEngine):
     def _data_loop(self,only_symbol=None):
         while not self.stop_event.is_set():
             now=now_ist()
-            warmup=now.weekday()<5 and "09:10"<=now.strftime("%H:%M")<self.settings.session_exit
+            warmup=self._session() in {"PREOPEN","ENTRY_WINDOW","MANAGE_ONLY"} and "09:10"<=now.strftime("%H:%M")<self.settings.session_exit
             if warmup:
                 for symbol in ((only_symbol,) if only_symbol else ("NIFTY","SENSEX")):
                     try:

@@ -4,7 +4,9 @@ import { createRoot } from "react-dom/client";
 import StrategyPortfolio from "./StrategyPortfolio";
 import ModelLearning from "./ModelLearning";
 import LearningMonitor from "./LearningMonitor";
+import { AgentCanvas, BacktestHistory, BacktestOverview } from "./TradingWorkspace";
 import "./style.css";
+import "./workspace.css";
 
 type Data = Record<string, any>;
 
@@ -57,8 +59,10 @@ function App() {
  const [data, setData] = useState<Data | null>(null);
 
  const [online, setOnline] = useState(false);
+ const [connectionChecked, setConnectionChecked] = useState(false);
 
- const [tab, setTab] = useState("monitor");
+ const [tab, setTab] = useState(()=>["backtest","agentic"].includes(window.location.hash.slice(1)) ? window.location.hash.slice(1) : "monitor");
+ useEffect(()=>{window.history.replaceState(null,"",`#${tab}`);},[tab]);
 
  const [notice, setNotice] = useState("");
 
@@ -79,6 +83,8 @@ function App() {
  const [trades, setTrades] = useState<Data[]>([]);
 
  const initialReport = useRef(false);
+ const manuallySelectedReport = useRef(false);
+ const latestSeenReport = useRef("");
 
  useEffect(() => {
   let stopped = false;
@@ -98,13 +104,15 @@ function App() {
     setData(next);
     setOnline(true);
 
-    if (!initialReport.current && next.latest_report?.report_id) {
+    if (next.latest_report?.report_id && (!initialReport.current || (!manuallySelectedReport.current && latestSeenReport.current !== next.latest_report.report_id))) {
      initialReport.current = true;
+     latestSeenReport.current = next.latest_report.report_id;
      setReportId(next.latest_report.report_id);
     }
    } catch {
     if (!stopped) setOnline(false);
    } finally {
+    if (!stopped) setConnectionChecked(true);
     clearTimeout(timeout);
     if (!stopped) timer = window.setTimeout(refresh, 2000);
    }
@@ -129,6 +137,7 @@ function App() {
   const controller = new AbortController();
 
   setReportLoading(true);
+  setReport(null);
 
   api(`/backtest/reports/${reportId}`, undefined, controller.signal)
    .then(setReport)
@@ -210,7 +219,7 @@ function App() {
      <div className="brand-mark">OX</div>
      <div>
       <div className="eyebrow">OBSERVED DATA / SIMULATED EXECUTION</div>
-      <h1>Options Paper Lab</h1>
+      <h1>NIFTY / SENSEX <span className="muted">Trading workspace</span></h1>
      </div>
     </div>
 
@@ -220,7 +229,7 @@ function App() {
        "LIVE DATA"
       : online ?
        data?.market?.session
-      : "DISCONNECTED"}
+      : connectionChecked ? "DISCONNECTED" : "CONNECTING"}
      </div>
 
      <div className="mode-toggle">
@@ -275,7 +284,7 @@ function App() {
     <div className="market-context">Refresh every 2s · IST</div>
    </section>
 
-   {!online && (
+   {!online && connectionChecked && (
     <Notice>
      Backend unavailable. Displayed values are stale; no connection is inferred.
     </Notice>
@@ -293,7 +302,8 @@ function App() {
    {data?.market?.error && <Notice>{data.market.error}</Notice>}
 
    {data?.implementation && (
-    <section className="panel spaced">
+    <details className="panel spaced implementation-details">
+     <summary>System readiness & paper risk controls</summary>
      <Head
       title="Implementation plan readiness"
       kicker={data.implementation.phase}
@@ -349,7 +359,7 @@ function App() {
        loss bound)
       </p>
      )}
-    </section>
+    </details>
    )}
 
    <nav className="tabs">
@@ -357,13 +367,14 @@ function App() {
      className={tab === "monitor" ? "active" : ""}
      onClick={() => setTab("monitor")}
     >
-     Paper & agents
+     Dashboard
     </button>
+    <button className={tab === "agentic" ? "active" : ""} onClick={() => setTab("agentic")}>Agentic view</button>
     <button
      className={tab === "backtest" ? "active" : ""}
      onClick={() => setTab("backtest")}
     >
-     Backtest lab
+     Backtest results
     </button>
 
     <span className="tab-spacer" />
@@ -372,7 +383,7 @@ function App() {
     </span>
    </nav>
 
-   {tab === "monitor" ?
+   {tab === "agentic" ? <><AgentCanvas data={data} online={online} onDetail={setDetail} /><LearningMonitor data={data?.learning_monitor} /></> : tab === "monitor" ?
     <>
      <StrategyPortfolio data={data?.strategies} />
      <LearningMonitor data={data?.learning_monitor} />
@@ -582,6 +593,8 @@ function App() {
      />
     </>
    : <>
+     <details className="panel spaced implementation-details">
+     <summary>Configure a new backtest · five-year range & historical data</summary>
      <BacktestForm
       defaults={data?.defaults}
       datasets={datasets}
@@ -630,6 +643,7 @@ function App() {
       </p>
      </section>
 
+     </details>
      {(running || submitted) && (
       <section className="panel job-progress" role="status">
        <strong>{running?.message || "Job submitted"}</strong>
@@ -649,8 +663,10 @@ function App() {
       </section>
      )}
 
-     <section className="panel spaced">
-      <Head title="Saved runs" kicker="PERSISTENT REPORTS" />
+     <BacktestHistory jobs={data?.jobs || []} selected={reportId} onSelect={(id:string|null,job?:Data)=>{if(job){setDetail(job);return;}if(id){manuallySelectedReport.current=true;setReportId(id);}}} />
+     {data?.latest_report?.report_id && reportId!==data.latest_report.report_id && <Notice>A newer report is available.<button className="ghost-button" onClick={()=>{manuallySelectedReport.current=false;latestSeenReport.current=data.latest_report.report_id;setReportId(data.latest_report.report_id);}}>Open latest report</button></Notice>}
+     <details className="panel spaced implementation-details">
+      <summary>Download jobs & archive manifests</summary>
       {data?.jobs?.length ?
        data.jobs.map((j: Data) => (
         <div className="job-row" key={j.id}>
@@ -717,12 +733,12 @@ function App() {
         </div>
        ))
       : <Empty>No saved runs.</Empty>}
-     </section>
+     </details>
 
      {reportLoading && <Notice>Loading saved report…</Notice>}
 
      {report ?
-      <Report report={report} onDetail={setDetail} />
+      <><BacktestOverview key={reportId} report={report} onDetail={setDetail} /><details className="panel spaced implementation-details"><summary>Full report · trades, agent attribution, coverage & assumptions</summary><Report report={report} onDetail={setDetail} /></details></>
      : <Empty>
        No report selected. Run a source check or select a contract-specific
        dataset.
@@ -749,6 +765,8 @@ function App() {
       </button>
       <div className="eyebrow">AUDIT / SOURCE EVIDENCE</div>
       <h2>{detail.agent || detail.symbol || "Details"}</h2>
+      {detail.message && <div className="drawer-block"><strong>{detail.status || "Job details"}</strong><p>{detail.message}</p>{detail.config && <p>{detail.config.from} → {detail.config.to} · {detail.config.symbols?.join(" + ")}</p>}</div>}
+      {detail.label && <div className="drawer-block"><strong>{detail.status}</strong><p>{detail.label}</p><small>{detail.event_id ? `Recorded event: ${detail.event_id}` : "No event recorded for this stage"}</small></div>}
       <AuditDetails detail={detail} />
       <details className="drawer-block">
        <summary>All recorded fields / raw evidence</summary>
@@ -813,9 +831,10 @@ function ArchiveManifest({ id }: Data) {
 function BacktestForm({ defaults, datasets, disabled, onRun }: Data) {
  const [source, setSource] = useState("dhan");
  const [dataset, setDataset] = useState("");
+ const [strategyMode, setStrategyMode] = useState("portfolio");
 
  const [underlying, setUnderlying] = useState("PARALLEL");
- const [years, setYears] = useState("days:7");
+ const [years, setYears] = useState("5");
 
  const [from, setFrom] = useState("");
  const [to, setTo] = useState("");
@@ -824,6 +843,8 @@ function BacktestForm({ defaults, datasets, disabled, onRun }: Data) {
  const [risk, setRisk] = useState("");
 
  const [dailyLimit, setDailyLimit] = useState("");
+ const [estimateExits,setEstimateExits]=useState(false);
+ const [estimateHaircut,setEstimateHaircut]=useState("0.05");
  const [correlatedLimit, setCorrelatedLimit] = useState("");
 
  useEffect(() => {
@@ -850,7 +871,9 @@ function BacktestForm({ defaults, datasets, disabled, onRun }: Data) {
      e.preventDefault();
      onRun({
       source,
+      ...(source === "dhan" ? {estimate_missing_exits:estimateExits,estimate_haircut:Number(estimateHaircut)} : {}),
       dataset,
+      ...(source === "csv" ? { strategy_mode: strategyMode } : {}),
       underlying,
       ...(years === "custom" ? { from, to }
       : years.startsWith("days:") ? { days: Number(years.split(":")[1]) }
@@ -871,10 +894,24 @@ function BacktestForm({ defaults, datasets, disabled, onRun }: Data) {
       value={source}
       onChange={(e) => setSource(e.target.value)}
      >
-      <option value="dhan">Dhan candles · gross research</option>
+      <option value="dhan">Dhan rolling candles · estimated research</option>
       <option value="csv">Sourced contract CSV</option>
      </select>
     </label>
+
+    {source === "dhan" && <label className="control">Missing exit prices<select aria-label="Missing exit price mode" value={estimateExits ? "estimate" : "strict"} onChange={e=>setEstimateExits(e.target.value==="estimate")}><option value="strict">Observed data only</option><option value="estimate">Exploratory estimated exit</option></select></label>}
+    {source === "dhan" && estimateExits && <label className="control">Exit price reduction<select aria-label="Estimated exit haircut" value={estimateHaircut} onChange={e=>setEstimateHaircut(e.target.value)}><option value="0">0% · prior price sensitivity</option><option value="0.05">5% · scenario assumption</option><option value="0.10">10% · higher loss sensitivity</option></select><small>Previous minute only. No learning from this run.</small></label>}
+    {source === "csv" && (
+     <label className="control">
+      Strategy
+      <select aria-label="Replay strategy" value={strategyMode} onChange={(e) => setStrategyMode(e.target.value)}>
+       <option value="portfolio">Combined portfolio · one shared account</option>
+       <option value="orb_retest">Opening-range retest</option>
+       <option value="trend_pullback">Trend pullback</option>
+       <option value="range_rejection">Range rejection</option>
+      </select>
+     </label>
+    )}
 
     {source === "csv" && (
      <label className="control">
@@ -887,7 +924,9 @@ function BacktestForm({ defaults, datasets, disabled, onRun }: Data) {
       >
        <option value="">Choose dataset</option>
        {datasets.map((d: Data) => (
-        <option key={d.name}>{d.name}</option>
+        <option key={d.name} value={d.name} disabled={d.option_replay_available === false}>
+         {d.name}{d.option_replay_available === false ? ` · ${d.reason}` : ""}
+        </option>
        ))}
       </select>
      </label>
@@ -1035,11 +1074,11 @@ function BacktestForm({ defaults, datasets, disabled, onRun }: Data) {
     apply. Paper-account settings are unchanged.
    </p>
    <p className="research-note">
-    Dhan runs calculate an ORB retest gross scenario from cached index and
+    Dhan runs calculate an ORB retest research scenario from cached index and
     option candles, with automatic direction, a held strike, structural stops
     and time exits. Current Dhan lot sizes are disclosed sizing assumptions.
-    Historical fees, expiry identity and quote execution remain unverified, so
-    net P&L is unavailable. Inspect each run's assumptions for differences from
+    Net P&L uses estimated charges; dated historical fees, expiry identity and
+    executable quote depth remain unverified. Inspect each run's assumptions for differences from
     the full paper policy.
    </p>
   </>
@@ -1088,6 +1127,9 @@ function Report({ report, onDetail }: Data) {
 
    {(report.issues || []).map((issue: string, i: number) => (
     <Notice key={i}>{issue}</Notice>
+   ))}
+   {(report.parity_limitations || []).map((issue: string, i: number) => (
+    <Notice key={`parity-${i}`}>{issue}</Notice>
    ))}
 
    {report.strategy_version && (
@@ -1326,7 +1368,7 @@ function Report({ report, onDetail }: Data) {
           <td>{a.rejected ?? "—"}</td>
           <td>{a.outcomes}</td>
           <td>
-           {valid ?
+           {valid || netResearch ?
             money(a.pnl)
            : research ?
             `${money(a.pnl)} gross only`
@@ -1353,6 +1395,7 @@ function Report({ report, onDetail }: Data) {
     onDetail={onDetail}
     title={
      valid ? "Backtest trades"
+     : netResearch && report.status === "research_complete" ? "Research trades · estimated net charges"
      : report.status === "research_complete" ?
       "All research trades · gross scenario"
      : "Partial trades · not validated performance"
@@ -2255,4 +2298,6 @@ function Kpi({ label, value, sub }: Data) {
  );
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+const root = import.meta.hot?.data.root ?? createRoot(document.getElementById("root")!);
+if (import.meta.hot) import.meta.hot.data.root = root;
+root.render(<App />);

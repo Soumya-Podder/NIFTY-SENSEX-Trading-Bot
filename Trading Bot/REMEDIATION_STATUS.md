@@ -1,4 +1,4 @@
-# Paper engine remediation — 12 September 2026
+# Paper engine remediation — updated 13 September 2026
 
 This is an implementation checkpoint, not a declaration of market readiness or a profitable strategy. All execution remains paper-only. The active objective is unfinished.
 
@@ -40,14 +40,49 @@ This is an implementation checkpoint, not a declaration of market readiness or a
 
 | Priority | Remaining work | Completion evidence |
 |---|---|---|
-| Critical | Complete replay integration for trend pullback, range rejection and the combined selector, using the same signal/protection/exit rules as paper execution | Individual and combined deterministic replay tests plus reports with explicit parity limitations |
+| Critical | Run the newly integrated individual/combined contract-CSV replay against genuine option history; extend rolling research without claiming equivalent execution fidelity | Contract replay integration is implemented and tested; actual individual/combined historical performance remains unvalidated |
 | Critical | Obtain/validate observed exact-contract historical option data, historical expiry/lot/tick metadata and dated costs; preserve data gaps | Source manifests, coverage report and complete held-contract intervals; underlying CSVs alone do not satisfy this |
 | High | Rerun all relevant historical results after the provenance/accounting/protection fixes | New versioned reports; old reports must not be treated as results of the corrected engine |
 | High | Implement a frozen, contemporaneous forward baseline comparison for each learning candidate, including entry and exit attribution | Paired forward evidence with costs, drawdown, independent sessions and rejection/promotion audit; trade counts alone are insufficient |
 | High | Improve supervision of an occupied but unhealthy service, and validate unattended scheduling/restart behavior | Fault/restart tests without duplicate execution authority or lost pending exits; current Windows task still depends on interactive login |
 | High | Source market holidays and verify exchange-data freshness semantics; record durable execution quote/depth evidence | Calendar provenance, delayed-packet tests and replayable quote records; local receive time alone does not prove exchange freshness |
 | High | Verify an actual market session from credential rotation through signals, admission, observed entry/exit and restart recovery | Dated unvalidated-paper observation logs; no simulated fixture inserted into production |
-| Medium | Complete coordinator performance attribution and forward-learning status from actual engine outcomes | Dashboard values tied to closed episodes and active model IDs rather than coordinator-local counters |
+| Medium | Complete paired forward-learning evidence from actual engine outcomes | Coordinator performance now derives from closed paper episodes; causal improvement still needs a contemporaneous baseline |
 | External | Restore a successful optional AI review | A bounded provider call completing the read-only evidence tool and returning a valid review; key presence alone is insufficient |
 
 No test establishes a guarantee of ₹1,000 daily profit, a guaranteed maximum realized loss under gaps/liquidity failures, or the absence of overfitting. The software enforces configured admission and halt rules; observed execution and forward performance still need evidence.
+
+## September 13 implementation update
+
+- Added `strategy_mode` values `orb_retest`, `trend_pullback`, `range_rejection` and `portfolio` to sourced-contract backtests, with corresponding UI choices and CLI `--strategy` selection.
+- Replay uses the shared completed-bar strategy rules, bounded seven-day indicator warmup, structural protection and strategy-specific 10/10/5-minute horizons. Combined replay ranks eligible offers across both indices using the shared observation ranking and one cash account.
+- Tests compare replay signals against the live prefix evaluator, remove a session bar to test continuity rejection, reverse source row order to test stable selection, and exercise attributed entries/time exits for the three strategies. Controlled indicator/price fixtures are explicitly isolated test data.
+- CSV jobs use the shared adaptive-exit implementation. Reports carry parity limitations: minute OHLC cannot establish the live two-second quote path, missing spreads are not invented, and historical observation ranking cannot reconstruct unavailable contemporaneous forward expectancy.
+- Dhan rolling research remains an explicitly different input path. Requests for the new exact-contract modes with rolling data reject clearly instead of silently running the ORB baseline.
+- Dataset listings distinguish underlying-only CSVs from files with contract columns. Underlying-only files cannot be selected as option execution history; a contract-looking header still requires full importer validation.
+- Added a sourced NSE derivatives holiday gate and exposed its provenance/limits in health. September 14, 2026 is closed according to [NSE circular FAOP/71777](https://nsearchives.nseindia.com/content/circulars/FAOP71777.pdf). This is a shared portfolio closure gate; independent BSE calendar verification, later amendments and special sessions remain outstanding.
+- Found configuration drift that prevented startup: three positions, ₹1,000 loss cap and ₹1,800 correlated risk. Restored the explicit persistent requirements: one position, ₹800 loss/hard halt, ₹600 correlated risk, ₹1,000 net target. No credential values were printed or intentionally changed.
+- Coordinator statistics now derive from deduplicated, completed paper episodes, separated by strategy and session. Partial fills, historical backtests, inconsistent net-cost outcomes and invalid records are excluded. Drawdown is explicitly closed-episode drawdown, not intratrade drawdown or proof of learning.
+- Full suite after replay/calendar integration: **172 passed**. The later focused performance/monitor suite passed **23 tests**; these runs overlap. The UI production build passed.
+- Restarted and verified the running API at approximately 10:32 IST on September 13: healthy heartbeat, no dead execution workers, correct ₹800/₹600/one-position limits, all four replay modes in the live API schema, underlying-only datasets correctly labelled, and coordinator statistics sourced from closed paper episodes.
+
+Example command, from the backend directory, after providing genuine contract history:
+
+```powershell
+.\.venv\Scripts\python.exe -B -m app.backtest.cli --csv "E:\trading_bot_full\Trading Bot\data\YOUR_OBSERVED_CONTRACTS.csv" --strategy portfolio
+```
+
+The filename above is a placeholder, not an existing verified dataset. Use each individual strategy name for separate reports; `--walk-forward` adds disjoint chronological validation windows.
+
+## Durable observation recording — September 13
+
+- Added a separate SQLite observation tape at `data/market_observations.db` on E:. Its writer is asynchronous, so the market-feed callback does not wait for disk writes or take the paper-account database lock.
+- Records normalized underlying observations, option top-of-book prices/quantities, contract metadata, local receipt timestamps, available last-trade timestamps and credential generation numbers. An allowlist excludes credentials and arbitrary raw packets.
+- Uses a 10,000-event bounded queue, a 1 GiB recording budget and a 1 GiB minimum free-space reserve. Overflow or storage limits produce explicit dropped-event counts. It does not delete old records silently; archive/capacity management remains an operational requirement when the budget is reached.
+- Each writer run records its lifecycle, persisted/dropped counts and clean shutdown. Failed writers stop accepting observations. Existing runs and observations survive restarts.
+- Paper entry and exit records now carry quote observation IDs. `GET /api/market/observations/{identifier}` retrieves a durably stored observation; missing, queued or dropped IDs return a clear 404 instead of an invented quote.
+- Market-data status reports writer health, queue depth, persisted count, drops and errors. The learning monitor reports recording gaps and never treats this as verified complete exchange history.
+- Validation: 26 recorder/runtime/integrity tests passed, followed by 43 broker/monitor/recorder/integrity tests after trace/restart changes. These test runs overlap.
+- Restarted and verified the running writer at approximately 10:43 IST. It had persisted one connection marker and two underlying startup observations, with no drops or writer errors. A read-only API lookup matched the stored observation. There were no recorded option quotes or market-session fills in this check; startup observations are not forward performance evidence.
+
+This completes the durable top-of-book recording foundation, not the paired baseline evaluator. A contemporaneous baseline/challenger account comparison, full quote-path replay, exchange book timestamp/sequence assurance and sufficient forward sessions remain required before claiming learning improves entries or exits.

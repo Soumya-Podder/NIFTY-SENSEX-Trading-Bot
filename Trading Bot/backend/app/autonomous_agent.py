@@ -3,6 +3,7 @@
 from __future__ import annotations
 import json
 import threading
+import time
 from datetime import timedelta
 from pathlib import Path
 from typing import Optional
@@ -18,6 +19,7 @@ from .backtest.jobs import BacktestJobs
 from .strategy_portfolio import STRATEGIES
 from .telemetry.event_bus import event_bus
 from .telemetry.decision_trace import event
+from .paper_performance import summarize_paper_episodes
 
 
 @dataclass
@@ -56,6 +58,9 @@ class AutonomousTradingAgent:
         self.last_cycle = None
         self.execution_observation = {}
         self.prepared_session = None
+        self.performance = {}
+        self.performance_read_at = float('-inf')
+        self.performance_lock = threading.Lock()
         
         self.learning = LearningService(self.store)
         self.backtest_jobs = BacktestJobs(self.store, self.gateway, settings, project_root / "data")
@@ -126,7 +131,7 @@ class AutonomousTradingAgent:
                     cutoff=settings.entry_cutoff,
                     exit_at=settings.session_exit
                 )
-                if session != "WEEKEND" and self.prepared_session != str(now_ist().date()):
+                if session not in {"WEEKEND","HOLIDAY"} and self.prepared_session != str(now_ist().date()):
                     self._prepare_session()
                 
                 if session in {"ENTRY_WINDOW", "MANAGE_ONLY"}:
@@ -306,10 +311,24 @@ class AutonomousTradingAgent:
 
     def get_status(self) -> dict:
         """Get current agent status for dashboard."""
+        with self.performance_lock:
+            if time.monotonic()-self.performance_read_at>=15:
+                episodes=self.store.list_records('episodes',10000)
+                self.performance=summarize_paper_episodes(episodes,str(now_ist().date()))
+                self.performance['history_truncated']=len(episodes)==10000
+                self.performance['checked_at']=now_ist().isoformat()
+                self.strategy_stats=self.performance['strategies']
+                totals=self.performance['total']
+                self.state.session_date=self.performance['session']
+                self.state.total_trades=totals['trades']; self.state.winning_trades=totals['wins']
+                self.state.losing_trades=totals['losses']; self.state.net_pnl=totals['pnl']
+                self.state.gross_pnl=totals['gross_pnl']; self.state.max_drawdown=totals['max_dd']
+                self.performance_read_at=time.monotonic()
         return {
             "running": self.running,
             "state": self.state.__dict__,
             "strategy_stats": self.strategy_stats,
+            "performance": self.performance,
             "dynamic_params": self.dynamic_params,
             "dynamic_params_applied_to_execution": False,
             "ml_frozen": self.ml_frozen if hasattr(self, "ml_frozen") else {},

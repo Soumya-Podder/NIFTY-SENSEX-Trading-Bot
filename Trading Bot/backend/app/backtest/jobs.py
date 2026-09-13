@@ -129,6 +129,8 @@ class BacktestJobs:
         with self.lock:
             if self.worker and self.worker.is_alive(): raise ValueError("A backtest is already running")
             strategy_mode=config.get("strategy_mode")
+            if config.get("estimate_missing_exits") and config.get("source")!="dhan":
+                raise ValueError("Estimated exit scenarios currently support Dhan rolling research only")
             if strategy_mode is not None and strategy_mode not in MODES:
                 raise ValueError("Unknown strategy replay mode")
             if strategy_mode and config.get("source")!="csv":
@@ -234,8 +236,9 @@ class BacktestJobs:
             if cancelled(): raise InterruptedError("Cancelled")
             report=report_from_run(result,config)
             progress("Recording agent feedback and validation evidence",0,1)
-            learn_from_outcomes(report["trades"],config["source"],self.store,identifier,
-                quality=report["quality"],replay=replay if windows else None,dataset_id=dataset_id,windows=windows,before_commit=before_commit)
+            if not config.get("estimate_missing_exits"):
+                learn_from_outcomes(report["trades"],config["source"],self.store,identifier,
+                    quality=report["quality"],replay=replay if windows else None,dataset_id=dataset_id,windows=windows,before_commit=before_commit)
             run=self.store.get_record("learning_runs",identifier,{})
             report.update(run_id=identifier,learning_run=run.get("entries",[]),validation_windows=windows,
                           created_at=datetime.now(timezone.utc).isoformat())
@@ -246,7 +249,7 @@ class BacktestJobs:
                 self.store.save_bundle([("reports",identifier,report),("jobs",identifier,job),
                     ("backtest","latest",{"report_id":identifier})])
             try:
-                learning=LearningService(self.store).train(report,identifier,replay=ml_replay)
+                learning=({"status":"EXCLUDED_ESTIMATED_SCENARIO","reason":"Estimated account paths cannot train or promote models"} if config.get("estimate_missing_exits") else LearningService(self.store).train(report,identifier,replay=ml_replay))
                 report["ml_learning"]=learning
                 self.store.put_record("reports",identifier,report)
             except Exception as exc:

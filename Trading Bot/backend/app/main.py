@@ -23,7 +23,12 @@ from .risk import PlanRiskPolicy
 from .ai import LearningService, get_analysts
 from .learning_monitor import LearningMonitor
 from .provenance import reviewed_report
+from .backtest.presentation import report_view, history_row
 from .runtime_health import execution_health
+from .backtest.data import dataset_metadata
+from .market_calendar import calendar_info
+from .quote_recorder import QuoteRecorder
+from .forward_comparison import ForwardComparison
 from .autonomous_agent import AutonomousTradingAgent, get_autonomous_agent
 import threading
 import uuid
@@ -35,8 +40,13 @@ gateway=DhanGateway(settings,store,credential_provider=current_credentials)
 plan_policy=PlanRiskPolicy.from_settings(settings)
 paper=PaperBroker(store,settings.paper_capital,CostModel(store),settings.max_quote_age_seconds,entry_cutoff=settings.entry_cutoff,policy=plan_policy)
 market_data=DhanMarketData(settings.dhan_client_id,settings.dhan_access_token,"NIFTY,SENSEX",gateway,store)
+quote_recorder=QuoteRecorder(ROOT/"data"/"market_observations.db")
+market_data.recorder=quote_recorder
 engine_class=MultiStrategyPaperEngine if settings.paper_strategy_mode=="portfolio" else PaperEngine
 engine=engine_class(settings,store,gateway,paper,market_data)
+forward_comparison=ForwardComparison(store,engine)
+engine.research_positions=forward_comparison.positions
+engine.forward_comparison=forward_comparison
 jobs=BacktestJobs(store,gateway,settings,ROOT/"data")
 ml_learning=getattr(engine,"learning",LearningService(store))
 analysts = get_analysts()
@@ -54,13 +64,17 @@ async def lifespan(app):
     jobs.recover()
     for item in reversed(store.list_records("events",80)): event_bus.publish(item)
     paper.control(enabled=settings.paper_autostart)
+    quote_recorder.start()
     engine.start(); market_data.start()
     autonomous_agent.start()
+    if isinstance(engine,MultiStrategyPaperEngine): forward_comparison.start()
     learning_monitor.start()
     yield
     learning_monitor.stop()
+    forward_comparison.stop()
     autonomous_agent.stop()
     engine.stop(); jobs.stop(); market_data.stop()
+    quote_recorder.stop()
     if llm_client:
         await llm_client.close()
 
@@ -89,6 +103,8 @@ class PaperControl(BaseModel):
 class BacktestRequest(BaseModel):
     model_config=ConfigDict(populate_by_name=True,extra="forbid")
     history_cache_only:bool=True
+    estimate_missing_exits:bool=False
+    estimate_haircut:float=Field(default=.05,ge=0,le=.25,allow_inf_nan=False)
     source:Literal["dhan","csv"]="dhan"
     underlying:Literal["NIFTY","SENSEX","PARALLEL"]="PARALLEL"
     years:int|None=Field(default=1,ge=0,le=5)
@@ -111,7 +127,7 @@ class LearningReview(BaseModel):
 
 def last_report():
     pointer=store.get_record("backtest","latest",{})
-    return reviewed_report(store.get_record("reports",pointer.get("report_id",""),{"status":"not_run","metrics":{},"trades":[]}))
+    return report_view(store.get_record("reports",pointer.get("report_id",""),{"status":"not_run","metrics":{},"trades":[]}))
 
 
 @app.get("/api/learning/model")
@@ -260,7 +276,7 @@ def set_mode(request:ModeRequest):
 @app.get("/api/health")
 def health():
     runtime=execution_health(engine,paper)
-    return json_safe(redacted({"app":"healthy" if runtime["healthy"] else "degraded",**mode(),"runtime":runtime,"engine":engine.status,"broker":paper.health(),"market_data":market_data.snapshot()}))
+    return json_safe(redacted({"app":"healthy" if runtime["healthy"] else "degraded",**mode(),"runtime":runtime,"calendar":calendar_info(now_ist().date()),"engine":engine.status,"broker":paper.health(),"market_data":market_data.snapshot()}))
 
 
 @app.get("/api/risk")
@@ -272,6 +288,19 @@ def risk():
         "session_start":settings.session_start,"entry_cutoff":settings.entry_cutoff,"session_exit":settings.session_exit,"daily_target":settings.daily_profit_target,
         "target_is_guaranteed":False,"target_basis":settings.daily_profit_target_basis,"plan_policy":plan_policy.describe(),
         "remaining_loss_allocation":account.get("remaining_loss_allocation"),"loss_ledger":account.get("loss_ledger")}
+
+
+@app.get("/api/market/observations/{identifier}")
+def recorded_observation(identifier:str):
+    observation=quote_recorder.read(identifier)
+    if observation is None: raise HTTPException(404,detail="Observation is not durably recorded; it may be queued, missing or dropped")
+    return observation
+
+
+@app.get("/api/learning/forward")
+def forward_learning():
+    return {**forward_comparison.status(),"sessions":store.list_records("forward_sessions",100),
+            "scope":"Paired daily reference account with the same starting state; not an additive trading account"}
 
 
 @app.get("/api/implementation")
@@ -412,7 +441,7 @@ def contracts():
 
 @app.get("/api/backtest/datasets")
 def datasets():
-    return {"datasets":[{"name":p.name,"size":p.stat().st_size} for p in sorted((ROOT/"data").glob("*.csv"))]}
+    return {"datasets":[dataset_metadata(p) for p in sorted((ROOT/"data").glob("*.csv"))]}
 
 
 @app.post("/api/backtest/run",status_code=202)
@@ -422,10 +451,19 @@ def run_backtest(request:BacktestRequest):
     start=resolve_backtest_start(end,request.from_date,request.days,request.years)
     if start>end or start<(pd.Timestamp(end)-pd.DateOffset(years=5)).date():
         raise HTTPException(422,detail="Select an ordered date range of at most five years")
+    requested_start=start
+    range_note=None
+    if request.source=="dhan" and request.years==5 and request.from_date is None and request.days is None:
+        archive_start=(pd.Timestamp(now_ist().date())-pd.DateOffset(years=5)).date()
+        if start<archive_start:
+            start=archive_start
+            range_note=f"Requested start {requested_start}; rolling history begins {start}. The earlier date is unavailable, not a zero-return session."
     config={"source":request.source,"symbols":["NIFTY","SENSEX"] if request.underlying=="PARALLEL" else [request.underlying],
         "underlying":request.underlying,"from":str(start),"to":str(end),"years":request.years,"days":request.days,
         "capital":request.capital,"risk_per_trade":request.risk_per_trade,"dataset":request.dataset,
+        "requested_from":str(requested_start),"range_note":range_note,"daily_target":settings.daily_profit_target,
         "strategy_mode":request.strategy_mode,
+        "estimate_missing_exits":request.estimate_missing_exits,"estimate_haircut":request.estimate_haircut,
         "daily_loss_limit":request.daily_loss_limit,"correlated_risk_limit":request.correlated_risk_limit,
         "interval":1,"strategy_version":"orb-retest-v1","selection":"automatic_non_atm",
         "entry_cutoff":settings.entry_cutoff,"session_exit":settings.session_exit,
@@ -441,6 +479,12 @@ def list_jobs(): return {"jobs":store.list_records("jobs",50)}
 
 @app.get("/api/backtest/cache")
 def backtest_cache(): return store.cache_summary()
+
+
+@app.get("/api/backtest/history")
+def backtest_history():
+    return {"jobs":[history_row(job,store.get_record("reports",job["report_id"]) if job.get("report_id") else None)
+                    for job in store.list_records("jobs",50)],"limit":50}
 
 
 @app.post("/api/backtest/cache/download",status_code=202)
@@ -485,7 +529,7 @@ def latest_report(): return last_report()
 def get_report(identifier:str):
     report=store.get_record("reports",identifier)
     if not report: raise HTTPException(404,detail="Unknown report")
-    return reviewed_report(report)
+    return report_view(report)
 
 
 @app.websocket("/api/ws")

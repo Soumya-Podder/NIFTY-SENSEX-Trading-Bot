@@ -150,7 +150,7 @@ class Store:
     def save_bundle(self, items):
         stamp=datetime.now(timezone.utc).isoformat()
         items=list(items)
-        account_write=any(namespace=="paper" and key=="account" for namespace,key,_ in items)
+        account_write=any((namespace=="paper" or namespace.endswith("/paper")) and key=="account" for namespace,key,_ in items)
         attempts=1 if account_write else 3
         for attempt in range(attempts):
             try:

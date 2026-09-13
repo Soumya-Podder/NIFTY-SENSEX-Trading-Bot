@@ -172,6 +172,7 @@ class PaperBroker:
                 signal={**signal,"risk_rupees":planned_risk}
             identifier=str(uuid.uuid4())
             p={**contract,"id":identifier,"contract_id":contract["contract_id"],"qty":quantity,
+               "entry_quote_observation_id":quote.get("observation_id"),
                "entry":price,"entry_ts":now.isoformat(),"entry_charges":fee,
                "entry_charges_remaining":fee["total"],"mark":float(quote["bid"]),"stale":False,
                "stop":signal["stop_price"] if self.policy else price*(1-signal["stop_percent"]),
@@ -186,6 +187,7 @@ class PaperBroker:
                 p.update({k:signal.get(k) for k in ("entry_features","ml_quality","option_atr")})
                 p["initial_stop"]=p["stop"]
             order={"id":identifier,"side":"BUY","status":"FILLED","price":price,"quantity":quantity,
+                   "quote_observation_id":quote.get("observation_id"),
                    "contract_id":p["contract_id"],"timestamp":now.isoformat(),"charges":fee,
                    "fill_model":"observed_ask_full_depth","mode":"paper"}
             self.state["cash"]-=debit; self.state["charges"]+=fee["total"]
@@ -211,12 +213,14 @@ class PaperBroker:
             gross=(price-p["entry"])*qty; net=gross-allocated-fee["total"]
             identifier=str(uuid.uuid4())
             trade={**p,"id":identifier,"position_id":p["id"],"quantity":qty,"qty":qty,
+                   "exit_quote_observation_id":quote.get("observation_id"),
                    "entry_premium":p["entry"],"exit":price,"exit_premium":price,"exit_ts":now.isoformat(),
                    "gross_pnl":gross,"costs":allocated+fee["total"],"pnl":net,"reason":reason,
                    "exit_charges":fee,"allocated_entry_charges":allocated,
                    "holding_minutes":(now-local_time(p["entry_ts"])).total_seconds()/60,
                    "fill_model":"observed_bid_with_depth","partial":qty<p["qty"]}
             order={"id":identifier,"side":"SELL","status":"FILLED","price":price,"quantity":qty,
+                   "quote_observation_id":quote.get("observation_id"),
                    "contract_id":p["contract_id"],"timestamp":now.isoformat(),"charges":fee,"mode":"paper"}
             self.state["cash"]+=qty*price-fee["total"]
             self.state["charges"]+=fee["total"]; self.state["realized_pnl"]+=net

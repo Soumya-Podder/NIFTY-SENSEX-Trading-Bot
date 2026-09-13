@@ -28,7 +28,8 @@ def reviewed_report(report):
     result["issues"]=list(result.get("issues", []))+[
         "INVALIDATED: synthetic option prices were previously labelled verified. This report cannot establish performance or train a trading model."]
     result["metrics"]={key:None for key in result.get("metrics", {})}
-    for key in ("equity", "drawdown", "daily", "agent_performance"):
+    result["gross_metrics"]={}
+    for key in ("equity", "gross_equity", "drawdown", "daily", "agent_performance"):
         if key in result: result[key]=[]
     result["attribution"]={}
     for trade in result.get("trades", []):

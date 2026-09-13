@@ -11,6 +11,7 @@ from ..expectancy import CostModel
 from ..ai import extract_features
 from .data import _valid_bar
 from .metrics import metrics
+from .estimation import estimate_gap_exit
 from ..risk import available_risk
 from ..setups import opening_range_retest
 from datetime import timedelta
@@ -75,7 +76,9 @@ class ResearchReplay:
         self.daily_limit=config.get("daily_loss_limit",settings.daily_loss_limit_rupees)
         self.correlated_limit=config.get("correlated_risk_limit",settings.max_correlated_risk_rupees)
         self.pipeline = DecisionPipeline(); self.cash = config["capital"]
-        self.trades = []; self.daily = []; self.curve = []; self.unresolved = []
+        self.trades = []; self.daily = []; self.curve = []; self.gross_curve = []; self.unresolved = []
+        self.settled_costs = 0.
+        self.estimates=[]
         self.skipped_entries = []
         self.plan = config.get("strategy_version") == "orb-retest-v1"
         self.net = config.get("net_costs", False)
@@ -100,6 +103,7 @@ class ResearchReplay:
                 nonlocal realized, count, loss_spend, losses, last_exit, session_locked
                 p = positions.pop(symbol); pnl = (price - p["entry_premium"]) * p["quantity"]
                 costs = CostModel.estimate_round_trip(p["entry_premium"], price, p["quantity"]) if self.net else None
+                self.settled_costs += costs or 0.
                 net_pnl = round(pnl - costs, 2) if self.net else None
                 self.cash += price * p["quantity"] + p.get("cost_reserve", 0) - (costs or 0)
                 trade_pnl = net_pnl if self.net else pnl
@@ -129,6 +133,16 @@ class ResearchReplay:
                             if sym == symbol and str(time.date()) == day: lookup[(time, sym)][identity] = candle
                         q = lookup[(stamp, symbol)].get(p["contract_id"])
                     if q is None:
+                        if self.config.get("estimate_missing_exits"):
+                            previous=lookup[(stamp-pd.Timedelta(minutes=1),symbol)].get(p["contract_id"])
+                            prior={**previous,"observed_at":(stamp-pd.Timedelta(minutes=1)).isoformat()} if previous else None
+                            estimated=estimate_gap_exit(p,stamp,prior,self.config.get("estimate_haircut",.05))
+                            if estimated:
+                                audit={**estimated,"symbol":symbol,"contract_id":p["contract_id"],"trade_id":p["id"]}
+                                p["estimated_exit"]=audit
+                                self.estimates.append(audit)
+                                close(symbol,{"offsets":[]},estimated["price"],stamp,"ESTIMATED_DATA_GAP_EXIT")
+                                continue
                         self.unresolved.extend({**held, "missing_at":stamp.isoformat(), "reason":"Portfolio replay stopped at a held-strike data gap"} for held in positions.values())
                         self.stopped = True; return
                     if not set(p["last_offsets"]) & set(q["offsets"]): self.offset_switches += 1
@@ -228,6 +242,7 @@ class ResearchReplay:
                     elif q["high"] >= p["target"]: close(symbol, q, p["target"], stamp, "TARGET")
                 equity = self.cash + sum(p["mark"]*p["quantity"] for p in positions.values())
                 self.curve.append({"timestamp":stamp.isoformat(), "value":equity})
+                self.gross_curve.append({"timestamp":stamp.isoformat(), "value":equity+self.settled_costs+sum(p.get("cost_reserve",0) for p in positions.values())})
                 for symbol in self.config["symbols"]:
                     row = rows.get((stamp, symbol))
                     if not row: continue
@@ -269,11 +284,28 @@ class ResearchReplay:
             })
 
     def result(self, coverage):
+        result=self._result(coverage)
+        if self.config.get("estimate_missing_exits"):
+            # The entire account path is scenario evidence, including later trades
+            # whose sizing can depend on an estimated exit. Never train on this run.
+            result.update(quality="estimated_scenario",status="scenario_partial" if self.stopped or self.coverage_incomplete else "scenario_complete",
+                          learning_eligible=False,source="dhan_estimated_exit_scenario_v1",
+                          estimation={"method":"previous_observation_exit_v1","haircut":self.config.get("estimate_haircut",.05),
+                                      "estimated_exits":len(self.estimates),"affected_trades":len(self.estimates),
+                                      "events":self.estimates,"missing_entries_estimated":False,
+                                      "entire_account_is_scenario":True})
+            for trade in result["trades"]: trade.update(quality="estimated_scenario",learning_eligible=False)
+            result["assumptions"].append("Exploratory scenario: missing held prices may cause liquidation at the preceding observed price less the configured haircut. No new entries, OI, volume, expiry identity or entire missing sessions are invented. The haircut is not a worst-case loss bound.")
+        return result
+
+    def _result(self, coverage):
         gross_trades = [{**t, "pnl":t["gross_pnl"], "costs":0} for t in self.trades]
         gross_days = [{**d, "pnl":d["gross_pnl"]} for d in self.daily]
         eval_trades = self.trades if self.net else gross_trades
         eval_days = self.daily if self.net else gross_days
-        calculated = metrics(eval_trades, [self.config["capital"]]+[p["value"] for p in self.curve], eval_days)
+        target=self.config.get("daily_target",self.settings.daily_profit_target)
+        calculated = metrics(eval_trades, [self.config["capital"]]+[p["value"] for p in self.curve], eval_days,target)
+        gross_metrics = metrics(gross_trades,[self.config["capital"]]+[p["value"] for p in self.gross_curve],gross_days,target)
         gross = calculated["total_pnl"] if not self.net else sum(t.get("gross_pnl", 0) for t in self.trades)
         net_total = calculated["total_pnl"] if self.net else None
         total_costs = sum(t.get("costs", 0) for t in self.trades) if self.net else None
@@ -299,9 +331,10 @@ class ResearchReplay:
             "source":"dhan_reconstructed_rolling",
             "pnl_basis":"net" if self.net else "current_lot_gross_scenario",
             "metrics":calculated,
-            "trades":self.trades, "curve":self.curve, "daily":self.daily, "unresolved":self.unresolved,
+            "trades":self.trades, "curve":self.curve, "gross_curve":self.gross_curve,
+            "gross_metrics":gross_metrics if not incomplete else {}, "daily":self.daily, "unresolved":self.unresolved,
             "skipped_entries":self.skipped_entries,
-            "coverage":coverage, "agent_counts":self.pipeline.counts, "assumptions":ASSUMPTIONS + ([
+            "coverage":coverage, "agent_counts":self.pipeline.counts, "assumptions":[a for a in ASSUMPTIONS if not (self.net and "net P&L and charges are unavailable" in a)] + ([
                 "ORB retest entry and structural option stop use shared strategy functions; one lot, three entry attempts, two losing trades and global exit cooldown constrain the scenario.",
                 "This estimates the baseline's net candle outcome with standard Indian options transaction charges (brokerage, STT, turnover, GST, stamp duty). Risk admission uses net risk accounting." if self.net else
                 "This estimates the baseline's gross candle outcome. Missing historical fees, expiry-day exclusions, Greeks, validated EV, weekly/drawdown review locks and executable depth prevent full paper-policy parity. Risk admission uses gross stop risk only.",

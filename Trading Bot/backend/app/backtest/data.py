@@ -1,10 +1,26 @@
 """Source validation. Rolling moneyness must never masquerade as a fixed contract."""
 import hashlib
 import json
+import csv
 from pathlib import Path
 import pandas as pd
 from ..expectancy import CostModel
 from ..provenance import has_synthetic_options
+
+
+def dataset_metadata(path):
+    """Header inspection is an eligibility hint, not verified historical coverage."""
+    result={"name":path.name,"size":path.stat().st_size,"option_replay_available":False}
+    try:
+        with path.open(encoding="utf-8-sig",newline="") as source:
+            fields=set(next(csv.reader(source)))
+    except (OSError,UnicodeError,StopIteration,csv.Error):
+        return {**result,"kind":"unreadable","reason":"Cannot read CSV header"}
+    if {"contract_id","expiry","strike","lot_size","tick_size","price_source","charge_schedule","underlying_close"}<=fields:
+        return {**result,"kind":"contract_candles","option_replay_available":True,"reason":"Contract columns present; full validation occurs before replay"}
+    if {"timestamp","symbol","open","high","low","close"}<=fields:
+        return {**result,"kind":"underlying_only","reason":"Index candles lack observed option prices, contract identity and dated charges"}
+    return {**result,"kind":"unsupported","reason":"Required candle/contract columns are missing"}
 
 
 def dataset_path(data_dir, name):

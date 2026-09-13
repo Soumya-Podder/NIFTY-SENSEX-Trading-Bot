@@ -57,7 +57,7 @@ class BacktestEngine:
         openings={}; records=x.to_dict("records") if not x.empty else []
         plan_candidates={}; option_history={}; consumed=set(); opportunities=[]
         portfolio_signals=historical_signals(df,cfg.strategy_mode,cancel or (lambda:False)) if cfg.strategy_mode else {}
-        if policy:
+        if policy and not cfg.strategy_mode:
             for (session,symbol),frame in x.groupby(["session","symbol"]):
                 for candidate in opening_range_retest(frame,frame.timestamp.max()+timedelta(minutes=1),all_candidates=True):
                     plan_candidates[(candidate["timestamp"],symbol)]=candidate
@@ -248,6 +248,7 @@ class BacktestEngine:
             for row in rows:
                 for q in row.get("option_quotes") or []: option_history[(q["contract_id"],stamp.isoformat())]=q
             if state!="ENTRY_WINDOW" or halted: continue
+            if cfg.strategy_mode and positions: continue
             offers=[]
             for row in rows:
                 symbol=row["symbol"]
@@ -261,6 +262,10 @@ class BacktestEngine:
                           pipeline.signal(row,max((r["high"] for r in opening),default=None),min((r["low"] for r in opening),default=None),len(opening))])
                 for signal in signals:
                     if not signal: continue
+                    if cfg.strategy_mode:
+                        if any(not pipeline.context_allowed(agent,context) for agent,context in signal["agent_contexts"].items()): continue
+                        for agent,context in signal["agent_contexts"].items():
+                            pipeline.stage(agent,symbol,"PASS","Shared completed-bar strategy rule",context)
                     signal.setdefault("feature_row",row)
                     if policy:
                         if signal["id"] in consumed: continue
@@ -290,6 +295,10 @@ class BacktestEngine:
                         if price*lot+buy["total"]<=cash and (price-exit_price)*lot+buy["total"]+sell["total"]<=cfg.risk_per_trade:
                             if cfg.strategy_mode:
                                 risk=(price-exit_price)*lot+buy["total"]+sell["total"]
+                                if risk>min(policy.trade_risk,policy.remaining(ledger)):
+                                    continue
+                                if price*lot+buy["total"]>min(policy.premium_limit,cash-policy.cash_reserve):
+                                    continue
                                 target=signal["target_price"]
                                 reward=(target-price)*lot-buy["total"]-CostModel.historical(candidate,target,lot,"sell",stamp)["total"]
                                 if reward/risk<1: continue

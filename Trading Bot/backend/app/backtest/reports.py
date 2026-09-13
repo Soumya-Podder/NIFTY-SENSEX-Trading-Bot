@@ -41,6 +41,8 @@ def report_from_run(result, config):
         "evidence_status":result.get("evidence_status"),"risk_policy":result.get("risk_policy"),
         "opportunities":result.get("opportunities",[]),"loss_ledger":result.get("loss_ledger"),
         "config":config,"pnl_basis":result.get("pnl_basis","net"),"metrics":result.get("metrics",{}),"equity":compact(curve),"drawdown":compact(drawdown),
+        "estimation":result.get("estimation"),"learning_eligible":result.get("learning_eligible"),
+        "gross_equity":compact(result.get("gross_curve",[])),"gross_metrics":result.get("gross_metrics",{}),
         "daily":result.get("daily",[]),"trades":trades,"unresolved":result.get("unresolved",[]),
         "skipped_entries":result.get("skipped_entries",[]),
         "issues":result.get("issues",[]),"coverage":result.get("coverage",[]),

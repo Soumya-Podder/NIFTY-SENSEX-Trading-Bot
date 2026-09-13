@@ -56,6 +56,7 @@ class DhanMarketData:
         self.last_packet_at=None
         self.recent_market_events=deque(maxlen=512)
         self.reconfigure_lock=threading.RLock()
+        self.recorder=None
 
     def refresh_credentials(self,client_id,access_token,force=False):
         with self.reconfigure_lock:
@@ -196,9 +197,11 @@ class DhanMarketData:
     def _on_connect(self, _feed) -> None:
         self.connected = True
         self.error = None
+        if self.recorder: self.recorder.record("feed_connected",{},self.credential_generation)
 
     def _on_close(self,*_args):
         self.connected=False
+        if self.recorder: self.recorder.record("feed_disconnected",{},self.credential_generation)
 
     def stop(self):
         self.stopping.set()
@@ -237,6 +240,7 @@ class DhanMarketData:
                     "bid":float(bid.get("bid_price",0)),"bid_qty":int(bid.get("bid_quantity",0)),
                     "ask":float(ask.get("ask_price",0)),"ask_qty":int(ask.get("ask_quantity",0)),
                     "ltp":float(packet.get("LTP",0)),"volume":packet.get("volume"),"oi":packet.get("OI")}
+                if self.recorder: quote["observation_id"]=self.recorder.record("option_depth",quote,self.credential_generation)
                 with self.lock: self.option_quotes[contract["contract_id"]]=quote
                 with self.lock:
                     self.recent_market_events.append({"event_type":"option_depth","received_at":received,"normalized":quote})
@@ -259,6 +263,7 @@ class DhanMarketData:
             tick["last_trade_timestamp"]=exchange_timestamp(packet.get("LTT"))
             tick["exchange_timestamp"]=tick["last_trade_timestamp"]
             tick["quote_update_timestamp"]=received
+            if self.recorder: tick["observation_id"]=self.recorder.record("underlying",tick,self.credential_generation)
             if self.store:
                 sequence=packet.get("sequence") or packet.get("seq")
                 previous=self.last_sequence.get(security_id)
@@ -290,7 +295,7 @@ class DhanMarketData:
                 "options_by_symbol":{s:{"subscribed":sum(c["symbol"]==s for c in option_contracts),
                     "fresh_depth":sum(q["symbol"]==s and quote_is_fresh(q) for q in option_quotes)} for s in self.symbol_names},
                 "credential_generation":self.credential_generation,
-                "tick_storage":{"mode":"bounded_memory","capacity":512,"buffered":len(self.recent_market_events),"persistent_raw_websocket_ticks":False}}
+                "tick_storage":self.recorder.status() if self.recorder else {"mode":"bounded_memory","capacity":512,"buffered":len(self.recent_market_events),"persistent_raw_websocket_ticks":False}}
 
 
 class DhanGateway:

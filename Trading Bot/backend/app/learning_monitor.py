@@ -154,6 +154,15 @@ class LearningMonitor:
     def scan(self):
         evidence = build_evidence(self.store, dict(getattr(self.engine, "ml_frozen", {}).get("models", {})),
                                   dict(self.engine.pipeline.policies), self.learning.lock.locked())
+        recorder=getattr(getattr(self.engine,"market",None),"recorder",None)
+        comparison=getattr(self.engine,"forward_comparison",None)
+        if comparison is not None:
+            evidence["forward_comparison"]=comparison.status()
+        if recorder is not None:
+            recording=recorder.status()
+            evidence["quote_recording"]={k:recording.get(k) for k in ("worker_alive","persisted_this_run","dropped_this_run","error","last_write","complete_exchange_history_verified")}
+            if recording.get("dropped_this_run") or recording.get("error") or not recording.get("worker_alive"):
+                evidence["alerts"].append("Quote recording has gaps or is unavailable; complete forward execution replay cannot be claimed.")
         evidence["downloaded_data"] = [
             {"symbol": symbol, "file": path.name, "present": path.is_file(),
              "bytes": path.stat().st_size if path.is_file() else None,

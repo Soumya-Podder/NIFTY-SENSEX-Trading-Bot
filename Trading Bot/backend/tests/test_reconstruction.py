@@ -271,6 +271,9 @@ def test_research_replay_net_costs_and_learning_ingestion(tmp_path):
     assert result["metrics"]["total_charges"] == pytest.approx(trade["costs"])
     assert replay.cash == pytest.approx(cfg["capital"]+trade["pnl"])
     assert replay.curve[-1]["value"] == pytest.approx(replay.cash)
+    assert replay.gross_curve[-1]["value"] == pytest.approx(cfg["capital"]+trade["gross_pnl"])
+    assert replay.gross_curve[-1]["value"]-replay.curve[-1]["value"] == pytest.approx(trade["costs"])
+    assert result["gross_metrics"]["total_pnl"] == pytest.approx(trade["gross_pnl"])
     assert trade["risk"] <= cfg["risk_per_trade"]
     assert trade["sizing_audit"]["estimated_cost_reserve"] > 0
     assert "entry_features" in trade
@@ -282,4 +285,3 @@ def test_research_replay_net_costs_and_learning_ingestion(tmp_path):
     train_res = service.train(report, "test-net-run")
     assert train_res["eligible_trades"] == 1
     assert train_res["excluded_trades"] == 0
-

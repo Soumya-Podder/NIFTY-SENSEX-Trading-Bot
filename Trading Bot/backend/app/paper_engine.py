@@ -126,18 +126,19 @@ class PaperEngine:
     def _quote_loop(self):
         while not self.stop_event.is_set():
             positions=self.broker.positions()["positions"]
+            research_positions=getattr(self,"research_positions",lambda:[])()
             active=self._session() in {"ENTRY_WINDOW","MANAGE_ONLY"}
-            if active or positions:
+            if active or positions or research_positions:
                 try:
                     with self.lock: contracts=list(self.contracts) if active else []
-                    by_id={c["contract_id"]:c for c in [*contracts,*positions]}
+                    by_id={c["contract_id"]:c for c in [*contracts,*positions,*research_positions]}
                     if by_id:
                         if self.market:
                             self.market.subscribe_options(list(by_id.values()))
                             streamed=self.market.executable_quotes()
                             quotes={k:{**v,**streamed[k]} for k,v in by_id.items() if k in streamed}
                         else: quotes=self.gateway.quotes(list(by_id.values()))
-                        for position in positions:
+                        for position in [*positions,*research_positions]:
                             q=quotes.get(position["contract_id"])
                             if q and q.get("bid",0)>0:
                                 try: q["exit_cost_estimate"]=self.broker.cost.quote(position,0,q["bid"],position["qty"])["total"]
