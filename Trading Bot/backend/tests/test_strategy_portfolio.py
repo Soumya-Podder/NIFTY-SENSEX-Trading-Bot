@@ -4,7 +4,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 import pandas as pd
 import pytest
-from app.strategy_portfolio import STRATEGIES,PORTFOLIO_VERSION,evaluate_strategies,rank_opportunities,signal_for
+from app.strategy_portfolio import STRATEGIES,PORTFOLIO_VERSION,evaluate_strategies,rank_opportunities,signal_for,regime_strategy_policy
 from app.portfolio_engine import MultiStrategyPaperEngine
 from app.config import Settings
 from app.session import session_state
@@ -65,6 +65,15 @@ def test_orb_remains_in_portfolio_with_real_feature_pipeline():
     f.loc[19,["open","high","low","close"]]=[102,104,102,103]
     signals,_=evaluate_strategies(f,f.timestamp.iloc[-1]+pd.Timedelta(minutes=1),"NIFTY")
     assert any(s["strategy_id"]=="orb_retest" and s["option_type"]=="CALL" for s in signals)
+
+
+def test_regime_changes_strategy_preference_without_bypassing_parallel_evaluation():
+    assert list(regime_strategy_policy("TREND_UP"))[0] == "trend_pullback"
+    assert list(regime_strategy_policy("RANGE"))[0] == "range_rejection"
+    trend = signal_for({"timestamp": "2026-01-02T10:00:00+05:30", "option_type": "CALL", "setup": "T"}, STRATEGIES[1], "NIFTY", "TREND_UP")
+    ranged = signal_for({"timestamp": "2026-01-02T10:00:00+05:30", "option_type": "CALL", "setup": "R"}, STRATEGIES[2], "NIFTY", "RANGE")
+    assert trend["regime_priority"] == 0 and ranged["regime_priority"] == 0
+    assert trend["regime_policy"] != ranged["regime_policy"]
 
 
 def test_future_rows_cannot_change_features_signals_or_ids():

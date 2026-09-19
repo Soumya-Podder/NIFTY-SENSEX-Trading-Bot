@@ -129,7 +129,9 @@ class LearningService:
         for t in outcomes:
             f = t.get("entry_features") or {}
             try:
-                valid = (not synthetic and report.get("quality") in {"verified", "research_net"} and report.get("pnl_basis", "net") == "net" and t.get("quality") in {"verified", "research_net"} and not t.get("partial") and
+                valid = (not synthetic and report.get("learning_eligible") is not False and not report.get("estimation")
+                    and t.get("learning_eligible") is not False and not t.get("estimated_exit")
+                    and report.get("quality") in {"verified", "research_net"} and report.get("pnl_basis", "net") == "net" and t.get("quality") in {"verified", "research_net"} and not t.get("partial") and
                     f.get("schema") == SCHEMA and isinstance(f.get("values"), dict) and
                     sum(number(f["values"].get(k)) is not None for k in FEATURES) >= 6 and
                     all(number(t.get(k)) is not None for k in ("pnl", "gross_pnl", "costs")) and t["costs"] >= 0 and

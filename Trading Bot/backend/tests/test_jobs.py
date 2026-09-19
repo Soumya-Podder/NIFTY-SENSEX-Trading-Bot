@@ -63,8 +63,11 @@ def test_backtest_budgets_are_not_capped_by_paper_settings():
     settings=Settings(_env_file=None)
     config=resolve_backtest_budgets({"capital":20000000,"risk_per_trade":5000},settings)
     assert config["capital"]==20000000 and config["risk_per_trade"]==5000
-    assert config["daily_loss_limit"]==pytest.approx(5000*850/300) and config["correlated_risk_limit"]==5000
-    assert settings.max_trade_risk_rupees==300 and settings.daily_loss_limit_rupees==850
+    assert config["daily_loss_limit"]==pytest.approx(5000*800/750) and config["correlated_risk_limit"]==pytest.approx(5000*600/750)
+    assert settings.max_trade_risk_rupees==750 and settings.daily_loss_limit_rupees==800
+    assert settings.hard_daily_halt_rupees==800 and settings.max_correlated_risk_rupees==600
+    assert settings.planned_daily_loss_rupees==600 and settings.daily_profit_target==1000
+    assert settings.daily_profit_target_basis=="net"
     explicit=resolve_backtest_budgets({"risk_per_trade":700,"daily_loss_limit":9000,"correlated_risk_limit":8000},settings)
     assert explicit["daily_loss_limit"]==9000 and explicit["correlated_risk_limit"]==8000
 
@@ -106,6 +109,30 @@ def test_archive_request_matrix_uses_persisted_scope(tmp_path):
     assert {args[3] for _,args in calls}=={"WEEK","MONTH"}
     assert {args[4] for _,args in calls}=={7}
     assert {args[5] for _,args in calls}=={"ATM+9"}
+
+
+def test_atm6_extension_preserves_fields_and_near_bucket():
+    import pandas as pd
+    from app.backtest.jobs import download_history,archive_manifest,ARCHIVE_EXTENSION_OFFSETS,ARCHIVE_FIELDS
+    calls=[]
+    class Gateway:
+        client=type("Client",(),{"expired_options_data":object()})()
+        def underlyings(self):
+            return [{"symbol":s,"security_id":s,"exchange_segment":"TEST"} for s in ("NIFTY","SENSEX")]
+        def candles(self,*a,**kw): return pd.DataFrame()
+        def call(self,method,*args,**kw):
+            calls.append(args)
+            return {}
+    config={"from":"2026-09-01","to":"2026-09-01","symbols":["NIFTY","SENSEX"],
+            "expiry_codes":[1],"strike_offsets":list(ARCHIVE_EXTENSION_OFFSETS),
+            "fields":[f for f in ARCHIVE_FIELDS if f!="iv"]}
+    counts=download_history(Gateway(),config,lambda *a:None,lambda:False,lambda *a:None)
+    assert counts["processed"]==counts["total"]==34 and len(calls)==32
+    assert {a[4] for a in calls}=={1}
+    assert {a[5] for a in calls}=={"ATM-6","ATM-5","ATM+5","ATM+6"}
+    assert all(a[7]==config["fields"] for a in calls)
+    manifest=archive_manifest("test",config,counts,"test")
+    assert manifest["fields"]==config["fields"] and manifest["expected_request_count"]==34
 
 
 @pytest.mark.parametrize("value",[0,-1,float("inf"),float("nan")])

@@ -15,6 +15,24 @@ STRATEGIES = (
      "condition":"ADX <= 20, flat EMA 21 and rejection of a prior 30-minute range","horizon_minutes":5},
 )
 
+# The selector evaluates every configured hypothesis in parallel, then uses
+# the completed-bar regime to rank compatible opportunities.  A regime never
+# changes the risk policy and never lets an unconfirmed strategy enter.
+REGIME_STRATEGY_POLICY = {
+    "TREND_UP": ("trend_pullback", "orb_retest", "range_rejection"),
+    "TREND_DOWN": ("trend_pullback", "orb_retest", "range_rejection"),
+    "RANGE": ("range_rejection", "orb_retest", "trend_pullback"),
+    "VOLATILITY_EXPANSION": ("orb_retest", "trend_pullback", "range_rejection"),
+    "TRANSITION": ("orb_retest", "trend_pullback", "range_rejection"),
+    "PRICE_ONLY_BASELINE": ("orb_retest", "trend_pullback", "range_rejection"),
+}
+
+
+def regime_strategy_policy(regime):
+    """Return the current day's deterministic strategy preference order."""
+    order = REGIME_STRATEGY_POLICY.get(str(regime), REGIME_STRATEGY_POLICY["TRANSITION"])
+    return {strategy_id: index for index, strategy_id in enumerate(order)}
+
 
 def closed_session(frame, now):
     if frame is None or frame.empty: return None,"Waiting for index candles"
@@ -46,9 +64,12 @@ def closed_session(frame, now):
 def signal_for(candidate,spec,symbol,regime):
     stamp=candidate["timestamp"]
     identity=f"{PORTFOLIO_VERSION}|{spec['version']}|{symbol}|{stamp}|{candidate['option_type']}"
+    preference=regime_strategy_policy(regime)
     return {**candidate,"id":hashlib.sha256(identity.encode()).hexdigest()[:24],"symbol":symbol,
         "strategy_id":spec["id"],"strategy_name":spec["name"],"strategy_version":spec["version"],
         "portfolio_version":PORTFOLIO_VERSION,"regime":regime,"horizon_minutes":spec["horizon_minutes"],
+        "regime_priority":preference.get(spec["id"],len(preference)),
+        "regime_policy":list(preference),
         "agent_contexts":{"Scanner":"completed_bars","Regime":regime,"Setup":candidate["setup"],
                           "Confirmation":"completed_resumption"},"policy_versions":{},
         "evidence_mode":"paper_observation","execution_ready":False}
@@ -127,6 +148,7 @@ def rank_opportunities(offers):
     """
     return sorted(offers,key=lambda o:(
         -int(o["ev"]["status"]=="PASS"),
+        int(o["signal"].get("regime_priority", 99)),
         -float((o["ev"].get("lower_bound_rupees") or 0)/o["risk"]),
         -o["net_reward_risk"],o["contract"]["spread_pct"],
         o["signal"]["strategy_id"],o["signal"]["symbol"],o["contract"]["contract_id"]))

@@ -4,6 +4,16 @@ Prepared for Soumya Podder • 7 September 2026 • All operating times are Asia
 
 **Status: specification only. No strategy backtest has been run for this plan, no historical dataset has been validated, and no broker account has been accessed or traded.** Numerical examples below are arithmetic illustrations, not historical performance. Proposed thresholds are initial research settings, not proven optimal parameters.
 
+**Current operating contract (supersedes the earlier draft numbers below):** the
+project is paper-only with ₹30,000 capital; maximum planned risk is ₹750 per
+trade, correlated open-risk is capped at ₹600, the daily loss limit and hard halt
+are ₹800 (₹600 planned allocation plus a ₹200 execution reserve), and the daily
+profit target is ₹1,000 net as a target rather than a guarantee. Monitoring starts
+at 09:15 IST, new entries stop at 14:30, and the engine requests session
+liquidation at 15:05. The earlier ₹1,200/₹850/15:25 values in this historical
+specification are retained as draft context only and must not be used by the
+running implementation.
+
 **1. Define the mandate and the limits of the promise.** Build an autonomous research, replay, paper-trading and reporting system, with a separate supervised live workflow. Live orders require human approval; a reviewed entry can include supported broker-native protective instructions. The chat assistant does not independently operate an investment account. A continuously running service, data entitlements and an execution operator are deployment requirements.
 
 | Requirement | Specification |

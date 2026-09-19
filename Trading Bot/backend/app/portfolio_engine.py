@@ -7,13 +7,14 @@ import threading
 import time
 import pandas as pd
 from .paper_engine import PaperEngine
-from .strategy_portfolio import STRATEGIES, PORTFOLIO_VERSION, evaluate_strategies, rank_opportunities
+from .strategy_portfolio import STRATEGIES, PORTFOLIO_VERSION, evaluate_strategies, rank_opportunities, regime_strategy_policy
 from .pipeline import plan_protection, execution_context
 from .expectancy import ExpectancyEngine
 from .session import now_ist, quote_is_fresh
 from .telemetry.decision_trace import event
 from .ai import LearningService, extract_features
 from .adaptive_exit import VERSION as ADAPTIVE_EXIT_VERSION
+from .specialist_agents import assess_specialists
 
 
 class MultiStrategyPaperEngine(PaperEngine):
@@ -25,7 +26,8 @@ class MultiStrategyPaperEngine(PaperEngine):
         self.ml_frozen={}
         self.status["portfolio"]={"version":PORTFOLIO_VERSION,"strategies":list(STRATEGIES),
             "evidence":"UNVALIDATED_PAPER","evaluations":[],"offers":[],"selected":None,
-            "reason":"Waiting for session","selection_rule":"Supported net evidence first; then net target reward / all-in risk and spread. No profit probability is claimed."}
+            "reason":"Waiting for session","selection_rule":"Supported net evidence first; then the day's regime-compatible strategy order, net target reward / all-in risk and spread. No profit probability is claimed.",
+            "day_regime":None,"regime_strategy_order":list(regime_strategy_policy("TRANSITION"))}
 
     def _freeze_policies(self,now):
         day=str(now.date())
@@ -191,6 +193,14 @@ class MultiStrategyPaperEngine(PaperEngine):
         buy_cost=self.broker.cost.quote(contract,price,0,qty)["total"]
         risk=(price-s["stop_price"]+price-contract["bid"])*qty+stop_cost
         reward=(s["target_price"]-price)*qty-target_cost
+        specialists=assess_specialists(s,contract,now,risk=risk,reward=reward,
+                                       max_quote_age=self.settings.max_quote_age_seconds)
+        s={**s,"specialist_agents":specialists["agents"],
+           "agent_scores":{name:row.get("status") for name,row in specialists["agents"].items()},
+           "orchestrator_decision":specialists["decision"],
+           "adversarial_warnings":specialists["agents"].get("Adversarial Agent",{}).get("warnings",[])}
+        if specialists["vetoes"]:
+            return None,"Specialist veto: "+"; ".join(specialists["vetoes"])
         budget=min(self.broker.policy.trade_risk,self.broker.policy.remaining(account["loss_ledger"],account["open_risk_rupees"]))
         if risk<=0 or risk>budget: return None,"One-lot all-in stop risk exceeds remaining budget"
         if price*qty+buy_cost>min(self.broker.policy.premium_limit,account["cash"]-self.broker.policy.cash_reserve):
@@ -229,6 +239,15 @@ class MultiStrategyPaperEngine(PaperEngine):
             self.scan_wait(symbol,"Evaluating strategy candidates" if found else rows[0]["reason"],now,
                 last_bar=rows[0].get("last_bar"))
         state["evaluations"]=evaluations
+        regimes=[row.get("regime") for row in evaluations if row.get("regime")]
+        if regimes:
+            # Deterministic majority classification is only a preference for
+            # ranking. Every strategy remains evaluated and risk gates remain
+            # independent of this field.
+            from collections import Counter
+            day_regime=Counter(regimes).most_common(1)[0][0]
+            state["day_regime"]=day_regime
+            state["regime_strategy_order"]=list(regime_strategy_policy(day_regime))
         if admission_block:
             state["reason"]=admission_block
             for signal in signals: self._gate(signal,"NOT_SELECTED",admission_block)
@@ -284,7 +303,10 @@ class MultiStrategyPaperEngine(PaperEngine):
         return {"signal_id":o["signal"]["id"],"strategy":o["signal"]["strategy_name"],"symbol":o["signal"]["symbol"],
             "contract_id":o["contract"]["contract_id"],"risk":o["risk"],"net_reward_at_target":o["net_reward"],
             "net_reward_risk":o["net_reward_risk"],"evidence":o["ev"]["status"],"samples":o["ev"].get("samples",0),
-            "ml_quality":o["signal"].get("ml_quality"),"exit_policy":o["signal"].get("exit_policy")}
+            "ml_quality":o["signal"].get("ml_quality"),"exit_policy":o["signal"].get("exit_policy"),
+            "orchestrator_decision":o["signal"].get("orchestrator_decision"),
+            "specialist_agents":o["signal"].get("specialist_agents",{}),
+            "adversarial_warnings":o["signal"].get("adversarial_warnings",[])}
 
     def _execute_offer(self,offer):
         now=now_ist(); s=offer["signal"]; c=offer["contract"]
@@ -310,7 +332,8 @@ class MultiStrategyPaperEngine(PaperEngine):
         mode="paper_observation" if offer["ev"]["status"]=="OBSERVATION" else "supported_net_evidence"
         s={**s,"risk_rupees":offer["risk"],"evidence_mode":mode,"selection_evidence":self._offer_view(offer)}
         s["agent_contexts"]={**s["agent_contexts"],"Option Selector":c["option_context"],"EV":mode,
-                             "Risk":"shared_portfolio","Execution":execution_context(now)}
+                             "Risk":"shared_portfolio","Execution":execution_context(now),
+                             **{name.replace(" Agent", ""):row.get("status") for name,row in (s.get("specialist_agents") or {}).items()}}
         try:
             order=self.broker.place_order(contract=c,quote={**c,**latest},quantity=c["lot_size"],signal=s,now=now)
         except Exception as exc:

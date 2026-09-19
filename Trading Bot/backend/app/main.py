@@ -488,7 +488,7 @@ def backtest_history():
 
 
 @app.post("/api/backtest/cache/download",status_code=202)
-def download_backtest_history():
+def download_backtest_history(extend_atm6:bool=False):
     today=now_ist().date()
     config={"source":"dhan","symbols":["NIFTY","SENSEX"],"download_only":True,
             "requested_from":"2021-01-01",
@@ -497,8 +497,18 @@ def download_backtest_history():
             "strike_offsets":["ATM",*[(f"ATM{n:+d}") for n in range(-4,5) if n]],
             "scope":"Index candles and weekly/monthly CALL/PUT rolling options: expiry codes 1/2/3, ATM through ATM±4 for every bucket; OHLC, volume, OI, IV, strike and spot where returned",
             "source_boundary":"Dhan rolling expired-options endpoint supports up to five years; requested archive starts at the derived five-year boundary and reports any older 2021 dates as unavailable"}
+    if extend_atm6:
+        from .backtest.jobs import ARCHIVE_EXTENSION_OFFSETS,ARCHIVE_FIELDS
+        config.update(expiry_codes=[1],strike_offsets=list(ARCHIVE_EXTENSION_OFFSETS),
+            fields=[field for field in ARCHIVE_FIELDS if field!="iv"],
+            scope="ATM±6 archive extension: near expiry (code 1), WEEK/MONTH CALL/PUT, offsets -6/-5/+5/+6. Existing ATM±4 cache retained. IV is optional and not required for candle reuse.")
     try: return jobs.start(config)
     except ValueError as exc: raise HTTPException(409,detail=str(exc)) from exc
+
+
+@app.post("/api/backtest/cache/extend-atm6",status_code=202)
+def extend_backtest_history():
+    return download_backtest_history(extend_atm6=True)
 
 
 @app.get("/api/backtest/jobs/{identifier}")

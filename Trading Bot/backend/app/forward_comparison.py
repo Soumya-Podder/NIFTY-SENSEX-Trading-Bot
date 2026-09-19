@@ -61,6 +61,7 @@ class ForwardComparison:
         self.store=store; self.primary=primary; self.reference=None; self.experiment=None
         self.thread=None; self.stop_event=threading.Event(); self.lock=threading.RLock()
         self.current={'status':'STARTING','self_improvement_proven':False}
+        self.last_checked_at=None
 
     def _models(self): return dict(getattr(self.primary,'ml_frozen',{}).get('models',{}))
     def _recording(self):
@@ -86,7 +87,7 @@ class ForwardComparison:
             if guard.get('version')!=VERSION or not guard.get('passed') or model.get('expires_at','')<=now.isoformat():
                 self.current={'status':'MODEL_VALIDATION_REQUIRED','self_improvement_proven':False}; return
         recording=self._recording()
-        if not recording.get('worker_alive') or recording.get('error'):
+        if not recording.get('worker_alive') or recording.get('error') or not recording.get('run_id'):
             self.current={'status':'WAITING_FOR_QUOTE_RECORDING','self_improvement_proven':False}; return
         with self.primary.broker.lock:
             account=copy.deepcopy(self.primary.broker.state)
@@ -116,6 +117,10 @@ class ForwardComparison:
             self.store.put_record('forward_sessions',self.experiment['id'],self.experiment)
 
     def cycle(self,now=None):
+        self._cycle(now)
+        self.last_checked_at=now_ist()
+
+    def _cycle(self,now=None):
         now=local_time(now or now_ist()); day=str(now.date())
         with self.lock:
             if self.reference is None:
@@ -137,14 +142,21 @@ class ForwardComparison:
             if models!=experiment['models'] and getattr(self.primary,'policy_day',None)==day:
                 self._issue('Candidate model set changed during comparison')
                 self.reference.broker.control(enabled=False)
-            if recording.get('run_id')!=experiment['recorder_run'] or recording.get('dropped_this_run',0)>experiment['initial_drops'] or recording.get('error'):
+            if (recording.get('run_id')!=experiment['recorder_run'] or not recording.get('worker_alive')
+                    or recording.get('dropped_this_run',0)>experiment['initial_drops'] or recording.get('error')):
                 self._issue('Quote recording continuity is incomplete')
-            if any(not t.is_alive() for t in self.reference.threads) or self.reference.status.get('error') or self.reference.status.get('selector_error'):
+            if (not self.reference.threads or any(not t.is_alive() for t in self.reference.threads)
+                    or any(self.reference.status.get(k) for k in ('error','selector_error','persistence_error'))):
                 self._issue('Reference execution worker unhealthy')
-            if self.primary.status.get('error') or self.primary.status.get('selector_error') or self.primary.status.get('persistence_error'):
+            if (not self.primary.threads or any(not t.is_alive() for t in self.primary.threads)
+                    or any(self.primary.status.get(k) for k in ('error','selector_error','persistence_error'))):
                 self._issue('Primary execution worker unhealthy')
+            if self.primary.broker.policy.describe()!=experiment['policy'] or self.reference.broker.policy.describe()!=experiment['policy']:
+                self._issue('Risk policy changed during comparison')
+                self.reference.broker.control(enabled=False)
             primary=self.primary.broker.snapshot(); reference=self.reference.broker.snapshot()
-            if primary['enabled']!=reference['enabled'] and models==experiment['models']:
+            if (primary['enabled']!=reference['enabled'] and models==experiment['models']
+                    and 'Risk policy changed during comparison' not in experiment['issues']):
                 self._issue('Account enable/pause controls diverged')
                 self.reference.broker.control(enabled=primary['enabled'])
             if day!=experiment['session']:
@@ -178,4 +190,7 @@ class ForwardComparison:
         if self.thread: self.thread.join(timeout=3)
         if self.reference: self.reference.stop()
     def status(self):
-        return {**self.current,'worker_alive':bool(self.thread and self.thread.is_alive())}
+        alive=bool(self.thread and self.thread.is_alive())
+        age=(now_ist()-self.last_checked_at).total_seconds() if self.last_checked_at else None
+        return {**self.current,'worker_alive':alive,'checked_at':self.last_checked_at.isoformat() if self.last_checked_at else None,
+                'age_seconds':age,'stale':not alive or age is None or age>30}

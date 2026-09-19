@@ -59,7 +59,7 @@ def test_plan_loss_spend_does_not_refill_after_winner_or_restart(tmp_path):
     broker.close(second["id"],quote(contract(),clock,bid=120),"TARGET",clock["now"])
     assert broker.snapshot()["loss_ledger"]["loss_spend"]==140
     restored=PaperBroker(store,30000,TestFees(),clock=lambda:clock["now"],policy=broker.policy)
-    assert restored.snapshot()["remaining_loss_allocation"]==510
+    assert restored.snapshot()["remaining_loss_allocation"]==460
     assert restored.snapshot()["loss_ledger"]["entries"]==2
 
 
@@ -82,7 +82,7 @@ def test_plan_target_locks_even_if_final_fill_is_below_target(tmp_path):
     clock["now"]+=timedelta(seconds=1)
     q={**quote(contract(),clock,bid=225),"exit_cost_estimate":20}
     broker.mark({contract()["contract_id"]:q},clock["now"])
-    assert broker.snapshot()["loss_ledger"]["lock_reason"]=="GROSS_PROFIT_LOCK"
+    assert broker.snapshot()["loss_ledger"]["lock_reason"]=="NET_PROFIT_LOCK"
     broker.close(first["id"],quote(contract(),clock,bid=210),"PROFIT_LOCK",clock["now"])
     assert broker.snapshot()["gross_session_pnl"]==1100
     with pytest.raises(ValueError,match="cannot be cleared"): broker.control(halted=False)
@@ -159,6 +159,24 @@ def test_account_persists_and_partial_exits_reconcile(account):
     from app.telemetry.agent_metrics import learn_from_outcomes
     learn_from_outcomes([episode],"paper",store,"paper:"+episode["id"],quality="verified")
     assert not store.pending_paper_feedback()
+
+
+def test_completed_episode_retains_specialist_decision_evidence(account):
+    broker,store,clock=account
+    s=signal("specialist-evidence")
+    s.update(
+        specialist_agents={"Liquidity Agent":{"status":"PASS"},"Adversarial Agent":{"status":"PASS"}},
+        agent_scores={"Liquidity Agent":"PASS","Adversarial Agent":"PASS"},
+        orchestrator_decision="CALL",
+        adversarial_warnings=[],
+    )
+    order=broker.place_order(contract=contract(),quote=quote(contract(),clock),quantity=10,signal=s,now=clock["now"])
+    clock["now"]+=timedelta(seconds=1)
+    broker.close(order["id"],quote(contract(),clock,bid=90),"STOP",clock["now"])
+    episode=store.list_records("episodes")[0]
+    assert episode["orchestrator_decision"]=="CALL"
+    assert episode["specialist_agents"]["Liquidity Agent"]["status"]=="PASS"
+    assert episode["agent_scores"]["Adversarial Agent"]=="PASS"
 
 
 def test_shared_cash_and_duplicate_signals(account):

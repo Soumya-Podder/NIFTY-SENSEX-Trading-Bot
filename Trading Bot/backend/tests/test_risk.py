@@ -5,7 +5,7 @@ def test_position_limit(): assert not RiskEngine().approve(100,.1,75,0,2).approv
 
 def test_fees_cash_and_correlated_risk_are_shared():
     risk=RiskEngine()
-    assert not risk.approve(100,.1,50,0,0,cash=5000,estimated_cost=50).approved
+    assert not risk.approve(100,.1,50,0,0,cash=5000,estimated_cost=300).approved
     assert not risk.approve(100,.1,50,0,1,cash=20000,correlated_risk=200,correlated_limit=600).approved
     assert not risk.approve(100,.1,50,-800,1,cash=20000,open_risk=200).approved
 

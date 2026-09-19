@@ -61,7 +61,7 @@ function App() {
  const [online, setOnline] = useState(false);
  const [connectionChecked, setConnectionChecked] = useState(false);
 
- const [tab, setTab] = useState(()=>["backtest","agentic"].includes(window.location.hash.slice(1)) ? window.location.hash.slice(1) : "monitor");
+ const [tab, setTab] = useState(()=>["agentic","backtest","monitor"].includes(window.location.hash.slice(1)) ? window.location.hash.slice(1) : "agentic");
  useEffect(()=>{window.history.replaceState(null,"",`#${tab}`);},[tab]);
 
  const [notice, setNotice] = useState("");
@@ -383,7 +383,9 @@ function App() {
     </span>
    </nav>
 
-   {tab === "agentic" ? <><AgentCanvas data={data} online={online} onDetail={setDetail} /><LearningMonitor data={data?.learning_monitor} /></> : tab === "monitor" ?
+    {tab === "agentic" ? (
+    <><AgentCanvas data={data} online={online} onDetail={setDetail} /><LearningMonitor data={data?.learning_monitor} /></>
+   ) : tab === "monitor" ?
     <>
      <StrategyPortfolio data={data?.strategies} />
      <LearningMonitor data={data?.learning_monitor} />

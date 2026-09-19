@@ -38,7 +38,7 @@ The reviewer checks changed evidence no more often than every 30 minutes. Change
 
 ## Current risk requirements
 
-The project `.env` sets a ₹1,000 net daily profit target, ₹800 daily-loss limit and hard halt, ₹600 planned-loss allocation, and ₹200 execution reserve. Per-trade and correlated risk limits remain ₹600 with one open position. The profit target initiates a lock using estimated net liquidation value, so ₹1,000 gross with charges still outstanding does not satisfy it. These are targets and controls; executable fills cannot be guaranteed during gaps or unavailable liquidity.
+The project `.env` sets a ₹1,000 net daily profit target, ₹800 daily-loss limit and hard halt, ₹600 planned-loss allocation, and ₹200 execution reserve. The current per-trade risk override is ₹750; the correlated open-risk veto remains ₹600 with one open position. The profit target initiates a lock using estimated net liquidation value, so ₹1,000 gross with charges still outstanding does not satisfy it. These are targets and controls; executable fills cannot be guaranteed during gaps or unavailable liquidity.
 
 The legacy API field `plan_policy.gross_target` retains its name for compatibility. Its interpretation is explicitly provided by `plan_policy.target_basis`, now `net` in this project's configuration.
 

@@ -6,7 +6,22 @@ from app.ai import LearningService
 from app.store import Store
 from app.learning_monitor import LearningMonitor, build_evidence
 from app.learning_validation import replay_evidence
+from app.learning_monitor import evidence_fingerprint
 from tests.test_adaptive_learning import trades
+
+
+def test_activity_counters_do_not_become_new_learning_evidence():
+    evidence={"quote_recording":{"worker_alive":True,"persisted_this_run":10,"last_write":"before","dropped_this_run":0},
+              "forward_comparison":{"status":"RUNNING","checked_at":"before","age_seconds":1,"stale":False}}
+    original=evidence_fingerprint(evidence)
+    evidence["quote_recording"].update(persisted_this_run=20,last_write="after")
+    evidence["forward_comparison"].update(checked_at="after",age_seconds=2)
+    assert evidence_fingerprint(evidence)==original
+    evidence["quote_recording"]["dropped_this_run"]=1
+    assert evidence_fingerprint(evidence)!=original
+    evidence["quote_recording"]["dropped_this_run"]=0
+    evidence["forward_comparison"]["stale"]=True
+    assert evidence_fingerprint(evidence)!=original
 
 
 def test_rejected_attempt_is_not_learning_or_deployment(tmp_path):
@@ -59,6 +74,20 @@ def test_profitable_research_or_missing_costs_cannot_pass_replay():
     candidate["quality"] = "verified"
     candidate["trades"][0]["costs"] = None
     assert not replay_evidence(candidate, baseline, "2025-01-01", "2025-12-31")["passed"]
+
+
+def test_explicit_learning_exclusion_survives_legacy_quality_label(tmp_path):
+    service=LearningService(Store(tmp_path/"exclusions.db"))
+    rows=trades()
+    for scope in ("report", "trade", "estimated"):
+        report={"quality":"verified","trades":copy.deepcopy(rows)}
+        if scope=="report": report["learning_eligible"]=False
+        elif scope=="estimated": report["estimation"]={"estimated_exits":1}
+        else:
+            for row in report["trades"]: row["learning_eligible"]=False
+        result=service.train(report,scope)
+        assert result["eligible_trades"]==0
+    assert not service.store.list_records("ml_models")
 
 
 def test_changed_exit_name_cannot_reuse_same_symbol_holdout(tmp_path):

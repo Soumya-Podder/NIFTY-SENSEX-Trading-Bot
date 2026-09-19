@@ -125,7 +125,11 @@ def test_promotion_waits_for_next_session_and_freezes_across_restart(tmp_path):
     assert service.freeze(now)["models"] == {}
     def replay(a, start, end):
         test=[t for t in trades()[-120:] if t["entry_features"]["values"]["adx"] == 1]
-        return {"quality": "verified", "trades": test}, {"quality": "verified", "trades": trades()[-120:]}
+        days=sorted({t["entry_ts"][:10] for t in trades()[-120:]})
+        def account(rows):
+            return {"quality":"verified","trades":rows,
+                    "daily":[{"date":day,"pnl":sum(t["pnl"] for t in rows if t["entry_ts"][:10]==day)} for day in days]}
+        return account(test),account(trades()[-120:])
     result=service.train({"quality": "verified", "trades": trades()}, "test-promotion", replay)
     assert result["models"][0]["status"] == "VALIDATED_PENDING_SESSION"
     assert service.freeze(now)["models"] == {}

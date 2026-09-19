@@ -180,6 +180,13 @@ class PaperBroker:
                "risk_rupees":signal["risk_rupees"],"setup":signal["setup"],"regime":signal["regime"],
                "agent_contexts":signal["agent_contexts"],"policy_versions":signal.get("policy_versions",{}),
                "signal_id":signal["id"],"quality":"verified","source":"paper_live_quotes","mae":0,"mfe":0}
+            # Preserve the complete decision evidence on the durable position
+            # and final episode.  Specialist status is advisory, but losing
+            # episodes must retain the exact matrix and adversarial challenge
+            # that preceded the Risk Sentinel decision for later forensics.
+            p.update({k:signal.get(k) for k in (
+                "specialist_agents", "agent_scores", "orchestrator_decision",
+                "adversarial_warnings") if k in signal})
             if self.policy:
                 p.update({k:signal.get(k) for k in ("invalidation","horizon_minutes","exit_policy","protection_evidence","strategy_version")})
                 p["evidence_mode"]=signal.get("evidence_mode","paper_observation")

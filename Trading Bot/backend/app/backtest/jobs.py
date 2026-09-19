@@ -18,6 +18,8 @@ from .strategy_signals import MODES
 
 ACTIVE={"queued","running","cancelling"}
 ARCHIVE_STRIKE_OFFSETS=("ATM","ATM-4","ATM-3","ATM-2","ATM-1","ATM+1","ATM+2","ATM+3","ATM+4")
+ARCHIVE_EXTENSION_OFFSETS=("ATM-6","ATM-5","ATM+5","ATM+6")
+ARCHIVE_FIELDS=("open","high","low","close","volume","oi","strike","spot","iv")
 
 
 def resolve_backtest_start(end, from_date=None, days=None, years=1):
@@ -29,7 +31,7 @@ def resolve_backtest_start(end, from_date=None, days=None, years=1):
 
 def download_history(gateway,config,progress,cancel,checkpoint):
     """Archive source observations only; never run a strategy or update learning."""
-    fields=["open","high","low","close","volume","oi","strike","spot","iv"]
+    fields=list(config.get("fields",ARCHIVE_FIELDS))
     # Dhan's documented rolling buckets are near/next/far (codes 1/2/3).
     # The requested archive uses the same explicit strike set for every
     # bucket and both expiry flags; no offset is silently omitted.
@@ -87,7 +89,7 @@ def archive_manifest(job_id, config, counts, completed_at):
         "strike_offsets": offsets,
         "sides": ["CALL", "PUT"],
         "expiry_flags": ["WEEK", "MONTH"],
-        "fields": ["open", "high", "low", "close", "volume", "oi", "strike", "spot", "iv"],
+        "fields": list(config.get("fields",ARCHIVE_FIELDS)),
         "request_count": counts.get("total", 0),
         "chunk_count": chunk_count,
         "expected_requests_per_symbol_chunk": expected_per_symbol_chunk,

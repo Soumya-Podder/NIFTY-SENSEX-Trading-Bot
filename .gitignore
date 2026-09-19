@@ -26,3 +26,8 @@ dist/
 .coverage
 htmlcov/
 .runtime-tmp/
+# Local Graphify installation and source/cache (kept on E: for this workspace)
+.venv-graphify/
+.cache/graphify/
+.cache/graphify-tmp/
+.cache/pip/

@@ -31,4 +31,8 @@ def pipeline_from_events(events: list[dict[str, Any]], symbol: str | None = None
         "status": latest.get(agent, {}).get("status", "WAITING"),
         "label": latest.get(agent, {}).get("summary", "Awaiting event"),
         "event_id": latest.get(agent, {}).get("id"),
+        "timestamp": latest.get(agent, {}).get("timestamp"),
+        "context": latest.get(agent, {}).get("context"),
+        "evaluation": latest.get(agent, {}).get("evaluation"),
+        "policy_version": latest.get(agent, {}).get("policy_version"),
     } for agent in AGENT_ORDER]
