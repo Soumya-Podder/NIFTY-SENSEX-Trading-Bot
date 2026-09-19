@@ -75,7 +75,7 @@ NIFTY and SENSEX have separate data workers and one shared portfolio authority.
   at 14:30. The exit loop continues when entries are paused or the account is halted.
 - Current `.env` defaults: ₹750 maximum planned risk per trade, ₹600 same-direction
   correlated open-risk cap, ₹800 daily loss/hard halt, ₹600 planned-loss allocation
-  plus a ₹200 execution reserve, and a ₹1,000 net daily target. Charges and existing
+  plus a ₹200 execution reserve, and a ₹20,000 monthly gross target. Charges and existing
   exposure reduce capacity; these are configurable limits, not guarantees against
   gaps or a missing exit quote.
 - Closed one-minute index candles, automatic CALL/PUT from aligned setups, nearest
@@ -98,9 +98,9 @@ NIFTY and SENSEX have separate data workers and one shared portfolio authority.
   are labelled last observed, not live. An exchange holiday calendar is not yet
   integrated; fresh quote and closed-bar gates prevent stale holiday entries.
 
-₹1,000 net daily is a tracking target, not an entry quota or promised outcome.
-On ₹30,000 it is 3.33% per day. The implementation does not establish that this is
-achievable. Paper results do not establish real execution performance.
+₹20,000 gross monthly is an average tracking target before charges and taxes, not
+an entry quota or promised outcome. The implementation does not establish that
+this is achievable. Paper results do not establish real execution performance.
 
 ## Historical backtests: data, calculation and limitations
 

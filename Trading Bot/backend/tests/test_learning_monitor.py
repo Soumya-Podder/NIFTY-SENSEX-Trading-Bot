@@ -182,30 +182,27 @@ def test_sdk_agent_reads_evidence_and_reloads_key(tmp_path, monkeypatch):
     assert captured[-1] == "test-openai-key"
 
 
-def test_new_daily_budget_and_net_profit_target():
+def test_new_daily_budget_and_monthly_gross_profit_target():
     from app.config import Settings
     from app.risk import PlanRiskPolicy
     settings = Settings(_env_file=None, daily_loss_limit_rupees=800, hard_daily_halt_rupees=800,
                         max_trade_risk_rupees=600, max_correlated_risk_rupees=600,
                         planned_daily_loss_rupees=600, emergency_execution_reserve_rupees=200,
-                        daily_profit_target=1000, daily_profit_target_basis="net")
+                        monthly_profit_target=20000, monthly_profit_target_basis="gross")
     policy = PlanRiskPolicy.from_settings(settings)
     assert policy.loss_allocation + policy.emergency_reserve == 800
     assert policy.remaining({"loss_spend": 250}, open_risk=100) == 250
-    assert not policy.target_reached(1020, 980)
-    assert policy.target_reached(1040, 1000)
-    assert not policy.target_reached(2000, None)
+    assert settings.monthly_profit_target == 20000
+    assert settings.monthly_profit_target_basis == "gross"
+    assert not policy.target_reached(20000, None)
 
 
 def test_net_profit_lock_uses_broker_liquidation_after_costs(tmp_path):
     from dataclasses import replace
     from tests.test_paper import plan_account
     broker, store, clock = plan_account(tmp_path)
-    broker.policy = replace(broker.policy, gross_target=1000, target_basis="net", loss_allocation=600)
+    broker.policy = replace(broker.policy, gross_target=None, target_basis="gross", loss_allocation=600)
     broker.state["loss_ledger"]["gross_realized"] = 1020
     broker.state["cash"] = broker.state["session_start_equity"] + 980
     broker.mark({}, clock["now"])
-    assert not broker.state["loss_ledger"]["lock_reason"]
-    broker.state["cash"] += 20
-    broker.mark({}, clock["now"])
-    assert broker.state["loss_ledger"]["lock_reason"] == "NET_PROFIT_LOCK"
+    assert broker.state["loss_ledger"]["lock_reason"] != "NET_PROFIT_LOCK"

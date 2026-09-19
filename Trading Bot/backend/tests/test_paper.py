@@ -76,16 +76,15 @@ def test_plan_serializes_indices_and_enforces_one_lot_cooldown_and_expiry(tmp_pa
         enter(broker,clock,c={**contract(),"expiry":"2026-09-04"},qty=10,identifier="expiry")
 
 
-def test_plan_target_locks_even_if_final_fill_is_below_target(tmp_path):
+def test_monthly_target_does_not_create_daily_profit_lock(tmp_path):
     broker,_,clock=plan_account(tmp_path)
     first=enter(broker,clock,qty=10)
     clock["now"]+=timedelta(seconds=1)
     q={**quote(contract(),clock,bid=225),"exit_cost_estimate":20}
     broker.mark({contract()["contract_id"]:q},clock["now"])
-    assert broker.snapshot()["loss_ledger"]["lock_reason"]=="NET_PROFIT_LOCK"
+    assert broker.snapshot()["loss_ledger"]["lock_reason"] is None
     broker.close(first["id"],quote(contract(),clock,bid=210),"PROFIT_LOCK",clock["now"])
     assert broker.snapshot()["gross_session_pnl"]==1100
-    with pytest.raises(ValueError,match="cannot be cleared"): broker.control(halted=False)
 
 
 def test_plan_daily_reset_preserves_weekly_pause_and_previous_day_result(tmp_path):

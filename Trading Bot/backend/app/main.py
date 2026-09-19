@@ -285,8 +285,9 @@ def risk():
     return {"halted":account["halted"],"reason":account["halt_reason"],"max_trade_risk_rupees":settings.max_trade_risk_rupees,
         "daily_loss_limit_rupees":settings.daily_loss_limit_rupees,"max_correlated_risk_rupees":settings.max_correlated_risk_rupees,
         "hard_daily_halt_rupees":settings.hard_daily_halt_rupees,"max_open_positions":settings.max_open_positions,
-        "session_start":settings.session_start,"entry_cutoff":settings.entry_cutoff,"session_exit":settings.session_exit,"daily_target":settings.daily_profit_target,
-        "target_is_guaranteed":False,"target_basis":settings.daily_profit_target_basis,"plan_policy":plan_policy.describe(),
+        "session_start":settings.session_start,"entry_cutoff":settings.entry_cutoff,"session_exit":settings.session_exit,
+        "monthly_target":settings.monthly_profit_target,"target_is_guaranteed":False,
+        "target_basis":settings.monthly_profit_target_basis,"plan_policy":plan_policy.describe(),
         "remaining_loss_allocation":account.get("remaining_loss_allocation"),"loss_ledger":account.get("loss_ledger")}
 
 
@@ -313,7 +314,7 @@ def implementation_status():
         "execution_validation":"BLOCKED_DATA","live_available":False,
         "plan_agents":plan_agent_capabilities(),
         "implemented":["Persisted non-replenishing paper loss allocation", "Atomic one-position/one-lot paper admission",
-                       "Cash reserve, entry/loss limits and cooldown", "Gross profit lock and fee-aware liquidation triggers",
+                       "Cash reserve, entry/loss limits and cooldown", "Fee-aware liquidation triggers",
                        "Weekly/drawdown review locks", "Learning candidates require review; no automatic deployment",
                        "Causal ORB retest baseline and fixed-contract minute replay with structural protection"],
         "remaining":["Forward-paper evidence and complete shared execution validation",
@@ -461,7 +462,7 @@ def run_backtest(request:BacktestRequest):
     config={"source":request.source,"symbols":["NIFTY","SENSEX"] if request.underlying=="PARALLEL" else [request.underlying],
         "underlying":request.underlying,"from":str(start),"to":str(end),"years":request.years,"days":request.days,
         "capital":request.capital,"risk_per_trade":request.risk_per_trade,"dataset":request.dataset,
-        "requested_from":str(requested_start),"range_note":range_note,"daily_target":settings.daily_profit_target,
+        "requested_from":str(requested_start),"range_note":range_note,"monthly_target":settings.monthly_profit_target,
         "strategy_mode":request.strategy_mode,
         "estimate_missing_exits":request.estimate_missing_exits,"estimate_haircut":request.estimate_haircut,
         "daily_loss_limit":request.daily_loss_limit,"correlated_risk_limit":request.correlated_risk_limit,

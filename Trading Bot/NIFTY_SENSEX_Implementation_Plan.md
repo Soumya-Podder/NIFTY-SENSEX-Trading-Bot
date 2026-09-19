@@ -8,7 +8,8 @@ Prepared for Soumya Podder • 7 September 2026 • All operating times are Asia
 project is paper-only with ₹30,000 capital; maximum planned risk is ₹750 per
 trade, correlated open-risk is capped at ₹600, the daily loss limit and hard halt
 are ₹800 (₹600 planned allocation plus a ₹200 execution reserve), and the daily
-profit target is ₹1,000 net as a target rather than a guarantee. Monitoring starts
+profit target is ₹20,000 gross per month on average, before charges and taxes, as a
+target rather than a guarantee. Monitoring starts
 at 09:15 IST, new entries stop at 14:30, and the engine requests session
 liquidation at 15:05. The earlier ₹1,200/₹850/15:25 values in this historical
 specification are retained as draft context only and must not be used by the

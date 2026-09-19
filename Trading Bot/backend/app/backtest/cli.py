@@ -22,7 +22,7 @@ def main():
     frame,digest=read_contract_csv(Path(args.csv),{"session_exit":settings.session_exit})
     cfg=BacktestConfig(initial_capital=args.capital,strategy_mode=args.strategy,
                        risk_per_trade=settings.max_trade_risk_rupees,daily_loss_limit=settings.daily_loss_limit_rupees,
-                       correlated_risk_limit=settings.max_correlated_risk_rupees,daily_target=settings.daily_profit_target,
+                       correlated_risk_limit=settings.max_correlated_risk_rupees,monthly_target=settings.monthly_profit_target,
                        entry_cutoff=settings.entry_cutoff,exit_at=settings.session_exit,
                        plan_policy=PlanRiskPolicy.from_settings(settings),adaptive_exits=True)
     if args.walk_forward:

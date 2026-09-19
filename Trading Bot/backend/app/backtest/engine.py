@@ -25,7 +25,7 @@ class BacktestConfig:
     correlated_risk_limit: float=300
     max_positions: int=1
     cooldown_bars: int=3
-    daily_target: float=1200
+    monthly_target: float=20000
     entry_cutoff: str="14:30"
     exit_at: str="15:10"
     trade_from: str=""
@@ -336,11 +336,11 @@ class BacktestEngine:
 
     def _result(self,trades,curve,daily,unresolved,errors,pipeline):
         values=[self.cfg.initial_capital,*[p["value"] for p in curve]]
-        summary=metrics(trades,pd.Series(values),daily,self.cfg.daily_target)
+        summary=metrics(trades,pd.Series(values),daily,self.cfg.monthly_target)
         valid=not errors and not unresolved
         if not valid:
             summary["partial_realized_pnl"]=summary["total_pnl"]
-            for key in ("total_pnl","average_daily_pnl","target_day_rate","profit_factor","expectancy","win_rate"):
+            for key in ("total_pnl","average_monthly_pnl","target_month_rate","profit_factor","expectancy","win_rate"):
                 summary[key]=None
             summary["profit_factor_status"]="DATA_BLOCKED"
         return {"trades":trades,"equity":pd.Series(values),"curve":curve,"daily":daily,"metrics":summary,

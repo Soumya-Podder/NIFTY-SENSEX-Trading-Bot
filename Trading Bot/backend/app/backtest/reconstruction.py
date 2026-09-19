@@ -92,7 +92,7 @@ class ResearchReplay:
             positions = {}; pending = {}; opening = {}; cooldown = {}; realized = 0.; count = 0; baseline=self.cash
             plan_candidates = {}
             consumed = set()
-            loss_spend=0.; losses=0; entries=0; last_exit=None; session_locked=False
+            loss_spend=0.; losses=0; entries=0; last_exit=None
             if self.plan:
                 for symbol, bars in session.groupby("symbol"):
                     for candidate in opening_range_retest(bars,bars.timestamp.max()+timedelta(minutes=1),all_candidates=True):
@@ -100,7 +100,7 @@ class ResearchReplay:
             rows = {(r.timestamp, r.symbol): r._asdict() for r in session.itertuples(index=False)}
             stamps = pd.date_range(f"{day} 09:15", f"{day} {self.settings.session_exit}", freq="min", tz="Asia/Kolkata")
             def close(symbol, q, price, stamp, reason):
-                nonlocal realized, count, loss_spend, losses, last_exit, session_locked
+                nonlocal realized, count, loss_spend, losses, last_exit
                 p = positions.pop(symbol); pnl = (price - p["entry_premium"]) * p["quantity"]
                 costs = CostModel.estimate_round_trip(p["entry_premium"], price, p["quantity"]) if self.net else None
                 self.settled_costs += costs or 0.
@@ -109,7 +109,6 @@ class ResearchReplay:
                 trade_pnl = net_pnl if self.net else pnl
                 realized += trade_pnl; count += 1
                 loss_spend+=max(0.,-trade_pnl); losses+=int(trade_pnl<0); last_exit=stamp
-                if self.plan and realized>=self.settings.daily_profit_target: session_locked=True
                 self.trades.append({**p, "exit_time":stamp.isoformat(), "exit_ts":stamp.isoformat(),
                     "outcome_observed_at":(stamp+timedelta(minutes=1)).isoformat(),
                     "exit_premium":price,
@@ -159,7 +158,7 @@ class ResearchReplay:
                 for symbol, planned in list(pending.items()):
                     pending.pop(symbol)
                     if hhmm >= self.settings.entry_cutoff: continue
-                    if self.plan and (session_locked or positions or entries>=self.settings.max_entry_attempts or
+                    if self.plan and (positions or entries>=self.settings.max_entry_attempts or
                         losses>=self.settings.max_losing_trades or (last_exit is not None and stamp<last_exit+timedelta(minutes=self.settings.exit_cooldown_minutes))): continue
                     q = lookup[(stamp, symbol)].get(planned["contract_id"])
                     if q is None and recover:
@@ -303,7 +302,7 @@ class ResearchReplay:
         gross_days = [{**d, "pnl":d["gross_pnl"]} for d in self.daily]
         eval_trades = self.trades if self.net else gross_trades
         eval_days = self.daily if self.net else gross_days
-        target=self.config.get("daily_target",self.settings.daily_profit_target)
+        target=self.config.get("monthly_target",self.settings.monthly_profit_target)
         calculated = metrics(eval_trades, [self.config["capital"]]+[p["value"] for p in self.curve], eval_days,target)
         gross_metrics = metrics(gross_trades,[self.config["capital"]]+[p["value"] for p in self.gross_curve],gross_days,target)
         gross = calculated["total_pnl"] if not self.net else sum(t.get("gross_pnl", 0) for t in self.trades)
@@ -313,14 +312,14 @@ class ResearchReplay:
         calculated.update(
             total_pnl=None if (incomplete or not self.net) else net_total,
             total_charges=None if (incomplete or not self.net) else total_costs,
-            target_day_rate=None,
+            target_month_rate=None,
             gross_pnl=None if incomplete else gross,
             partial_realized_gross_pnl=gross,
             average_daily_pnl=None if (incomplete or not self.net) else calculated["average_daily_pnl"],
             gross_average_daily_pnl=calculated["average_daily_pnl"] if not self.net else (sum(d.get("gross_pnl", 0) for d in self.daily)/len(self.daily) if self.daily else None)
         )
         if incomplete:
-            for key in ("profit_factor", "win_rate", "expectancy", "max_drawdown", "max_drawdown_pct", "gross_average_daily_pnl"):
+            for key in ("profit_factor", "win_rate", "expectancy", "max_drawdown", "max_drawdown_pct", "gross_average_daily_pnl", "average_monthly_pnl"):
                 calculated[key] = None
             calculated["profit_factor_status"] = "INCOMPLETE"
         return {"status":"research_partial" if incomplete else "research_complete",

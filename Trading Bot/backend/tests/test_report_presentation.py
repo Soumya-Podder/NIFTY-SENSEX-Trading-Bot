@@ -31,9 +31,9 @@ def test_completed_net_scenario_and_legacy_assumption_are_explicit():
 
 
 def test_research_metrics_use_configured_target_and_export_gross_curve():
-    replay=ResearchReplay({"capital":30000,"risk_per_trade":600,"symbols":["NIFTY"],"net_costs":True},Settings(_env_file=None,daily_profit_target=1000),{})
+    replay=ResearchReplay({"capital":30000,"risk_per_trade":600,"symbols":["NIFTY"],"net_costs":True},Settings(_env_file=None,monthly_profit_target=20000),{})
     result=replay.result([])
-    assert result["metrics"]["daily_target"] == 1000
+    assert result["metrics"]["monthly_target"] == 20000
     result["gross_curve"]=[{"timestamp":"2026-09-07T15:05:00+05:30","value":30100}]
     report=report_from_run(result,{"capital":30000})
     assert report["gross_equity"][0]["value"] == 30100

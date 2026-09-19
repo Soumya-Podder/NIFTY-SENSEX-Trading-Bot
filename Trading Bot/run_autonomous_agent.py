@@ -32,7 +32,7 @@ def main():
     print(f"Capital: ₹{settings.paper_capital:,.0f}")
     print(f"Max Trade Risk: ₹{settings.max_trade_risk_rupees:,.0f}")
     print(f"Daily Loss Limit: ₹{settings.daily_loss_limit_rupees:,.0f}")
-    print(f"Daily Target: ₹{settings.daily_profit_target:,.0f}")
+    print(f"Monthly Gross Target: ₹{settings.monthly_profit_target:,.0f}")
     print(f"Strategy Mode: {settings.paper_strategy_mode}")
     print("-" * 60)
     

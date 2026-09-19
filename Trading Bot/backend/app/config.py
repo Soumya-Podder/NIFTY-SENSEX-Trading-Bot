@@ -44,8 +44,8 @@ class Settings(BaseSettings):
     max_quote_age_seconds: int = Field(default=2,ge=1,le=30)
     max_spread_pct: float = Field(default=.03,gt=0,lt=1,allow_inf_nan=False)
     max_correlated_risk_rupees: float = Field(default=600,gt=0,allow_inf_nan=False)
-    daily_profit_target: float = Field(default=1000,gt=0,allow_inf_nan=False)
-    daily_profit_target_basis: Literal["gross", "net"] = "net"
+    monthly_profit_target: float = Field(default=20000,gt=0,allow_inf_nan=False)
+    monthly_profit_target_basis: Literal["gross", "net"] = "gross"
     learning_min_train_trades: int = 60
     learning_min_context_trades: int = Field(default=20,gt=0)
     learning_min_validation_trades: int = 30

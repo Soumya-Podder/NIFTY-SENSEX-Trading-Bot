@@ -200,7 +200,7 @@ class BacktestJobs:
                 frame,dataset_id=read_contract_csv(path,config,cancelled)
                 cfg=BacktestConfig(initial_capital=config["capital"],risk_per_trade=config["risk_per_trade"],
                     daily_loss_limit=config.get("daily_loss_limit",self.settings.daily_loss_limit_rupees),correlated_risk_limit=config.get("correlated_risk_limit",self.settings.max_correlated_risk_rupees),
-                    max_positions=self.settings.max_open_positions,daily_target=self.settings.daily_profit_target,
+                    max_positions=self.settings.max_open_positions,monthly_target=self.settings.monthly_profit_target,
                     entry_cutoff=self.settings.entry_cutoff,exit_at=self.settings.session_exit,adaptive_exits=bool(config.get("strategy_mode")),
                     horizon_minutes=10,min_stop=0.0,invalidation_buffer=0.0,strategy_mode=config.get("strategy_mode"))
                 if config.get("strategy_version")=="orb-retest-v1" or cfg.strategy_mode:

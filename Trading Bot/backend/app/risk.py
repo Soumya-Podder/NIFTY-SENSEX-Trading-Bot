@@ -16,8 +16,8 @@ class PlanRiskPolicy:
     max_entries: int=3
     max_losses: int=2
     cooldown_minutes: int=5
-    gross_target: float=1000
-    target_basis: str="net"
+    gross_target: float | None=None
+    target_basis: str="gross"
     weekly_loss: float=1700
     max_drawdown: float=2550
     entry_cutoff: str="14:30"
@@ -30,7 +30,7 @@ class PlanRiskPolicy:
         return cls(trade_risk=s.max_trade_risk_rupees,loss_allocation=s.planned_daily_loss_rupees,
             emergency_reserve=s.emergency_execution_reserve_rupees,premium_limit=s.max_premium_commitment_rupees,
             cash_reserve=s.cash_reserve_rupees,max_entries=s.max_entry_attempts,max_losses=s.max_losing_trades,
-            cooldown_minutes=s.exit_cooldown_minutes,gross_target=s.daily_profit_target,target_basis=s.daily_profit_target_basis,
+            cooldown_minutes=s.exit_cooldown_minutes,
             weekly_loss=s.weekly_loss_pause_rupees,max_drawdown=s.drawdown_pause_rupees,
             entry_cutoff=s.entry_cutoff,exit_at=s.session_exit)
 
@@ -48,6 +48,8 @@ class PlanRiskPolicy:
     def describe(self): return asdict(self)
 
     def target_reached(self, gross_pnl, net_liquidation_pnl):
+        if self.gross_target is None:
+            return False
         value = net_liquidation_pnl if self.target_basis == "net" else gross_pnl
         return value is not None and math.isfinite(value) and value >= self.gross_target
 

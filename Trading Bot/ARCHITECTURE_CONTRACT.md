@@ -8,7 +8,7 @@ This is the operating contract for the NIFTY and SENSEX paper-trading project. I
 - Maximum planned loss per trade is **₹750**. The correlated open-risk veto remains **₹600** until explicitly changed.
 - The hard daily halt is **₹800**, consisting of ₹600 planned loss allocation plus a ₹200 execution reserve.
 - The account has a one-position cap and does not replenish the loss allocation after a loss.
-- The net daily target is ₹1,000 or more as a target only; it is never a promise of return.
+- The monthly gross target is ₹20,000 or more on average before charges and taxes; it is a target only and never a promise of return.
 - Paper execution is the only available order authority. Real-money order placement remains disabled server-side.
 - The deterministic Risk Sentinel owns the veto. No model, LLM, learner, orchestrator or agent may override it.
 

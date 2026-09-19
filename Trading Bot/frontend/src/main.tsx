@@ -353,8 +353,8 @@ function App() {
        net P&amp;L: {money(account.liquidation_pnl)} · lock:{" "}
        {account.loss_ledger?.lock_reason || "None"}
        <br />
-       Target: {money(account.plan_policy.gross_target)} {account.plan_policy.target_basis || "gross"} · planned daily
-       allocation: {money(account.plan_policy.loss_allocation)} · emergency
+       Monthly gross target: {money(data.risk?.monthly_target)} · planned daily
+       loss allocation: {money(account.plan_policy.loss_allocation)} · emergency
        reserve: {money(account.plan_policy.emergency_reserve)} (not a guaranteed
        loss bound)
       </p>
@@ -1311,9 +1311,9 @@ function Report({ report, onDetail }: Data) {
        sub={`${m.sessions} observed sessions`}
       />
       <Kpi
-       label="Target day rate"
-       value={pct(m.target_day_rate)}
-       sub={`${money(m.daily_target)} net target; not guaranteed`}
+       label="Target month rate"
+       value={pct(m.target_month_rate)}
+       sub={`${money(m.monthly_target)} gross target; not guaranteed`}
       />
       <Kpi
        label="Worst session"
