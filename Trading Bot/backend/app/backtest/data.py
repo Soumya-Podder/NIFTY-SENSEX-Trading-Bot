@@ -31,7 +31,7 @@ def dataset_path(data_dir, name):
     return path
 
 
-def read_contract_csv(path, config=None, cancel=lambda:False):
+def read_contract_csv(path, config=None, cancel=lambda:False, underlying_frame=None):
     """Read one row per exact option contract/minute, with repeated underlying OHLCV."""
     cfg=config or {}; data=pd.read_csv(path,keep_default_na=False)
     if data.empty: raise ValueError("Dataset is empty")
@@ -84,6 +84,22 @@ def read_contract_csv(path, config=None, cancel=lambda:False):
             quotes.append(q)
         frames.append({"timestamp":stamp,"symbol":symbol,**underlying,"option_quotes":quotes})
     frame=pd.DataFrame(frames)
+    if underlying_frame is not None:
+        # Explicitly supplied observed index candles can preserve a minute with
+        # no option trades. Empty quotes cannot create an option fill.
+        underlying_frame=underlying_frame.copy()
+        if underlying_frame.duplicated(["timestamp","symbol"]).any():
+            raise ValueError("Duplicate underlying candles")
+        for row in underlying_frame.to_dict("records"): _valid_bar(row)
+        actual=frame.set_index(["timestamp","symbol"])
+        supplied=underlying_frame.set_index(["timestamp","symbol"])
+        common=actual.index.intersection(supplied.index)
+        columns=["open","high","low","close","volume"]
+        if not actual.loc[common,columns].eq(supplied.loc[common,columns]).all().all():
+            raise ValueError("Underlying candles disagree with contract dataset")
+        missing=supplied.loc[supplied.index.difference(actual.index)].reset_index()
+        missing["option_quotes"]=[[] for _ in range(len(missing))]
+        frame=pd.concat([frame,missing],ignore_index=True).sort_values(["timestamp","symbol"])
     # Every included session must contain the full decision/exit interval. Entire missing
     # exchange sessions still require a sourced calendar and are disclosed in the report.
     session_exit=cfg.get("session_exit",cfg.get("exit_at","15:10"))

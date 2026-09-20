@@ -29,8 +29,8 @@ class Settings(BaseSettings):
     # to the superseded limits when a worker/test loads settings without an env
     # file or after a clean checkout.
     max_trade_risk_rupees: float = Field(default=750,gt=0,allow_inf_nan=False)
-    daily_loss_limit_rupees: float = Field(default=800,gt=0,allow_inf_nan=False)
-    hard_daily_halt_rupees: float = Field(default=800,gt=0,allow_inf_nan=False)
+    daily_loss_limit_rupees: float = Field(default=1200,gt=0,allow_inf_nan=False)
+    hard_daily_halt_rupees: float = Field(default=1200,gt=0,allow_inf_nan=False)
     max_open_positions: int = Field(default=1,ge=1,le=2)
     min_ev_rupees: float = 0
     paper_capital: float = Field(default=30000,gt=0,allow_inf_nan=False)

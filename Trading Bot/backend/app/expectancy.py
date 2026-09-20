@@ -75,7 +75,7 @@ class CostModel:
         result["brokerage"]=float(schedule["brokerage"])
         result["gst"]=rounded((result["brokerage"]+result["exchange"]+result["sebi"]+result["ipft"])*float(schedule["gst_rate"]),"gst")
         result["total"]=round(sum(result.values()),2)
-        result.update(source=schedule["source"],as_of=day,kind="dated_schedule",quantity=qty)
+        result.update(source=schedule["source"],as_of=day,kind="estimated_schedule" if schedule.get("estimated") else "dated_schedule",quantity=qty)
         return result
 
     @staticmethod

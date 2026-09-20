@@ -68,6 +68,34 @@ def test_coordinator_has_no_independent_order_authority():
     with pytest.raises(RuntimeError,match='shared paper engine'): agent._execute_exit(None,None)
 
 
+def test_coordinator_watchdog_restarts_dead_workers_without_order_authority(monkeypatch):
+    agent = object.__new__(AutonomousTradingAgent)
+    agent.running = True
+    agent.stop_event = __import__("threading").Event()
+    agent.worker_restarts = 0
+    agent.last_worker_restart = None
+    agent.agent_thread = type("DeadThread", (), {"is_alive": lambda self: False})()
+    agent.learning_thread = type("DeadThread", (), {"is_alive": lambda self: False})()
+    agent.watchdog_thread = None
+    published = []
+    agent._publish_event = lambda *args, **kwargs: published.append(args)
+
+    class LiveThread:
+        def __init__(self, target, name, daemon):
+            self.target, self.name, self.daemon = target, name, daemon
+        def start(self):
+            return None
+        def is_alive(self):
+            return True
+
+    monkeypatch.setattr("app.autonomous_agent.threading.Thread", LiveThread)
+    agent._ensure_worker_threads()
+    assert agent.worker_restarts == 2
+    assert agent.agent_thread.name == "autonomous-agent"
+    assert agent.learning_thread.name == "agent-learning"
+    assert any(event[2] == "WORKER_RESTARTED" for event in published)
+
+
 def test_legacy_report_is_invalidated_without_erasing_audit_record():
     original={'quality':'verified','status':'complete','metrics':{'total_pnl':1000},
               'trades':[{'contract_id':'dynamic:NIFTY:test','quality':'verified'}]}

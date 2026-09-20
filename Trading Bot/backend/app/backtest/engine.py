@@ -332,6 +332,14 @@ class BacktestEngine:
                           parity_limitations=["Minute candles do not reconstruct the two-second bid/ask path.",
                                               "Historical selection uses dated fees and candle prices; unavailable spreads are not invented.",
                                               "Forward expectancy is not inferred from later trades; this replay uses frozen observation ranking."])
+        if any(q.get("charge_schedule", {}).get("estimated") for r in records for q in r.get("option_quotes") or []):
+            result.update(learning_eligible=False, deployment_ready=False,
+                          fidelity="observed_contract_estimated_fees",
+                          estimation={"fees": "Scenario assumptions; not certified historical charges"})
+            if result["quality"] == "verified":
+                result.update(quality="research_net", status="research_complete")
+            for trade in result["trades"]:
+                trade.update(quality="research_net", learning_eligible=False)
         return result
 
     def _result(self,trades,curve,daily,unresolved,errors,pipeline):

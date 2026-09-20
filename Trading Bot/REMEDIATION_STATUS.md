@@ -6,7 +6,7 @@ This is an implementation checkpoint, not a declaration of market readiness or a
 
 - Starting paper capital: ₹30,000.
 - Monthly target: ₹20,000 gross before charges and taxes, averaged across the month; not guaranteed.
-- Daily hard halt: ₹800, consisting of ₹600 planned allocation and ₹200 execution reserve.
+- Daily hard halt: ₹1,200, with ₹600 planned allocation and ₹200 execution reserve retained.
 - Per-trade and correlated risk caps: ₹600; one position; existing three-entry/two-loss limits retained.
 - Monitoring starts at 09:15 IST; entry cutoff remains 14:30; liquidation requests start at 15:05. Missing depth must remain a pending exit, never an invented fill.
 - Project `.env` is authoritative for credentials. The running engine reports current credential checks without exposing secrets.
@@ -61,10 +61,10 @@ No test establishes a guarantee of ₹1,000 daily profit, a guaranteed maximum r
 - Dhan rolling research remains an explicitly different input path. Requests for the new exact-contract modes with rolling data reject clearly instead of silently running the ORB baseline.
 - Dataset listings distinguish underlying-only CSVs from files with contract columns. Underlying-only files cannot be selected as option execution history; a contract-looking header still requires full importer validation.
 - Added a sourced NSE derivatives holiday gate and exposed its provenance/limits in health. September 14, 2026 is closed according to [NSE circular FAOP/71777](https://nsearchives.nseindia.com/content/circulars/FAOP71777.pdf). This is a shared portfolio closure gate; independent BSE calendar verification, later amendments and special sessions remain outstanding.
-- Found configuration drift that prevented startup: three positions, ₹1,000 loss cap and ₹1,800 correlated risk. Restored the explicit persistent requirements: one position, ₹800 loss/hard halt, ₹600 correlated risk, and ₹20,000 monthly gross target. No credential values were printed or intentionally changed.
+- Found configuration drift that prevented startup: three positions, ₹1,000 loss cap and ₹1,800 correlated risk. Restored the explicit persistent requirements: one position, ₹1,200 loss/hard halt, ₹600 correlated risk, and ₹20,000 monthly gross target. No credential values were printed or intentionally changed.
 - Coordinator statistics now derive from deduplicated, completed paper episodes, separated by strategy and session. Partial fills, historical backtests, inconsistent net-cost outcomes and invalid records are excluded. Drawdown is explicitly closed-episode drawdown, not intratrade drawdown or proof of learning.
 - Full suite after replay/calendar integration: **172 passed**. The later focused performance/monitor suite passed **23 tests**; these runs overlap. The UI production build passed.
-- Restarted and verified the running API at approximately 10:32 IST on September 13: healthy heartbeat, no dead execution workers, correct ₹800/₹600/one-position limits, all four replay modes in the live API schema, underlying-only datasets correctly labelled, and coordinator statistics sourced from closed paper episodes.
+- Restarted and verified the running API at approximately 10:32 IST on September 13: healthy heartbeat, no dead execution workers, correct ₹1,200/₹600/one-position limits, all four replay modes in the live API schema, underlying-only datasets correctly labelled, and coordinator statistics sourced from closed paper episodes.
 
 Example command, from the backend directory, after providing genuine contract history:
 

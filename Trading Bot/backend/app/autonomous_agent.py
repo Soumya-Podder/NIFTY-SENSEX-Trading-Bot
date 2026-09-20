@@ -70,6 +70,9 @@ class AutonomousTradingAgent:
         self.stop_event = threading.Event()
         self.agent_thread: Optional[threading.Thread] = None
         self.learning_thread: Optional[threading.Thread] = None
+        self.watchdog_thread: Optional[threading.Thread] = None
+        self.worker_restarts = 0
+        self.last_worker_restart = None
         
         # Strategy performance tracking
         self.strategy_stats = {s["id"]: {"trades": 0, "wins": 0, "pnl": 0.0, "max_dd": 0.0} for s in STRATEGIES}
@@ -109,6 +112,8 @@ class AutonomousTradingAgent:
         
         self.learning_thread = threading.Thread(target=self._learning_loop, name="agent-learning", daemon=True)
         self.learning_thread.start()
+        self.watchdog_thread = threading.Thread(target=self._watchdog_loop, name="agent-watchdog", daemon=True)
+        self.watchdog_thread.start()
         
         self._publish_event("Agent", "SYSTEM", "STARTED", "Autonomous agent started")
 
@@ -120,7 +125,37 @@ class AutonomousTradingAgent:
             self.agent_thread.join(timeout=5)
         if self.learning_thread:
             self.learning_thread.join(timeout=5)
+        if self.watchdog_thread:
+            self.watchdog_thread.join(timeout=5)
         self._publish_event("Agent", "SYSTEM", "STOPPED", "Autonomous agent stopped")
+
+    def _watchdog_loop(self):
+        """Keep coordinator workers alive without creating another execution authority."""
+        while not self.stop_event.wait(2):
+            try:
+                self._ensure_worker_threads()
+            except Exception as exc:
+                self._publish_event("Agent", "SYSTEM", "WATCHDOG_ERROR",
+                                    f"Worker watchdog error: {type(exc).__name__}")
+
+    def _ensure_worker_threads(self):
+        if not self.running:
+            return
+        workers = (
+            ("agent_thread", self._agent_loop, "autonomous-agent", "SYSTEM",
+             "Coordinator worker restarted after unexpected stop"),
+            ("learning_thread", self._learning_loop, "agent-learning", "LEARNING",
+             "Learning worker restarted after unexpected stop"),
+        )
+        for attribute, target, name, symbol, summary in workers:
+            thread = getattr(self, attribute, None)
+            if thread is None or not thread.is_alive():
+                thread = threading.Thread(target=target, name=name, daemon=True)
+                setattr(self, attribute, thread)
+                thread.start()
+                self.worker_restarts += 1
+                self.last_worker_restart = now_ist().isoformat()
+                self._publish_event("Agent", symbol, "WORKER_RESTARTED", summary)
 
     def _agent_loop(self):
         """Main agent loop - runs every 2 seconds during market hours."""
@@ -333,6 +368,13 @@ class AutonomousTradingAgent:
             "dynamic_params_applied_to_execution": False,
             "ml_frozen": self.ml_frozen if hasattr(self, "ml_frozen") else {},
             "last_cycle": self.last_cycle,
+            "worker_restarts": self.worker_restarts,
+            "last_worker_restart": self.last_worker_restart,
+            "worker_liveness": {
+                "coordinator": bool(self.agent_thread and self.agent_thread.is_alive()),
+                "learning": bool(self.learning_thread and self.learning_thread.is_alive()),
+                "watchdog": bool(self.watchdog_thread and self.watchdog_thread.is_alive()),
+            },
             "role": "research_coordinator",
             "order_authority": False,
             "execution_owner": type(self.engine).__name__ if self.engine else None,

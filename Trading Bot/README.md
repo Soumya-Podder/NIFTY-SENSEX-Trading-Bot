@@ -65,6 +65,14 @@ Current per-index scan status includes the last completed bar, evaluation time
 and waiting/rejection reason. A new scan clears old downstream agent-card states.
 NIFTY and SENSEX have separate data workers and one shared portfolio authority.
 
+The research coordinator and learning worker have a liveness watchdog. If either
+worker thread stops unexpectedly, it is recreated and a `WORKER_RESTARTED` event
+is recorded. This means the agents keep observing, retrying data/learning work,
+and waiting through unavailable evidence without silently becoming inactive.
+It does **not** mean they force trades, bypass risk halts, retry indefinitely
+against a broken process, or invent prices/fills; the shared paper engine,
+freshness gates, persistence checks and Risk Sentinel remain authoritative.
+
 ## Paper execution
 
 - Entries start enabled when `PAPER_AUTOSTART=true`. The dashboard's paper toggle enables or pauses only the simulated broker; it never enables live order authority. The paper engine still applies fresh-data, session, contract, cash and risk gates.
@@ -74,7 +82,7 @@ NIFTY and SENSEX have separate data workers and one shared portfolio authority.
 - Session 09:15–15:05 IST; the opening 15 minutes build the range. Entries stop
   at 14:30. The exit loop continues when entries are paused or the account is halted.
 - Current `.env` defaults: ₹750 maximum planned risk per trade, ₹600 same-direction
-  correlated open-risk cap, ₹800 daily loss/hard halt, ₹600 planned-loss allocation
+  correlated open-risk cap, ₹1,200 daily loss/hard halt, ₹600 planned-loss allocation
   plus a ₹200 execution reserve, and a ₹20,000 monthly gross target. Charges and existing
   exposure reduce capacity; these are configurable limits, not guarantees against
   gaps or a missing exit quote.
@@ -198,6 +206,33 @@ excluded correctly), both directions, and held contracts' subsequent candles.
 Every supplied session must have all one-minute underlying bars from 09:15 through
 15:05. Missing entire trading days still require an exchange calendar; reports state
 actual supplied coverage and must not be interpreted as complete requested-year results.
+
+The recorder database at `data/market_observations.db` is auditable with:
+
+```powershell
+python -m app.backtest.observation_audit `
+  --db ..\data\market_observations.db `
+  --output ..\data\option_observation_audit.json
+```
+
+This audit reports recorded option rows, symbols, contracts, exchange-date
+coverage, missing quote fields, dropped recorder rows and unclean runs. It
+deliberately does not convert quote/depth observations into OHLC candles or
+mark them eligible for fixed-contract replay: that requires a documented
+one-minute aggregation policy, dated charges, and a complete coverage manifest.
+
+To replay downloaded Dhan rolling history already retained in the local cache
+without making a network request, run:
+
+```powershell
+python -m app.backtest.cli --source rolling-cache `
+  --from 2023-01-01 --to 2026-09-15
+```
+
+This is a rolling research replay. Its output remains incomplete/research-only
+because Dhan rolling candles do not prove fixed security IDs, historical lot
+sizes, bid/ask execution, or dated broker charges. Use the CSV path above for
+verified fixed-contract replay.
 
 Replay uses shared cash across indices, the next candle's actual open, one adverse
 tick with adverse tick-grid rounding, entry-bar exit checks, stop-first resolution

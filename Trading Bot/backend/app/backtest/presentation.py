@@ -38,7 +38,11 @@ def report_view(original):
     # with the recorded cost model, without changing the saved original report.
     if quality == "research_net":
         report["assumptions"] = [s for s in report.get("assumptions", []) if "net P&L and charges are unavailable" not in s]
-        report["assumptions"].append("Net results use estimated charges and current lot sizes. Dated fees, exact historical expiry identity and executable bid/ask depth remain unverified.")
+        if report.get("fidelity") == "observed_contract_estimated_fees":
+            report["presentation"]["evidence_label"] = "Observed contracts · estimated fees · research only"
+            report["assumptions"].append("Prices and contract metadata are source observations; charges are scenario estimates. Minute candles do not establish executable bid/ask depth.")
+        else:
+            report["assumptions"].append("Net results use estimated charges and current lot sizes. Dated fees, exact historical expiry identity and executable bid/ask depth remain unverified.")
     return report
 
 

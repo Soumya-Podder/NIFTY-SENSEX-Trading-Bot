@@ -80,6 +80,19 @@ def test_real_classifier_json_roundtrip_and_missing_features():
     with pytest.raises(ValueError): restored.predict({"schema": "future-schema"})
 
 
+@pytest.mark.parametrize("flags", [
+    {"status": "research_partial"}, {"quality": "research_net"},
+    {"issues": ["missing candles"]}, {"unresolved": [{"contract_id": "open"}]},
+    {"estimation": {"fees": "scenario"}},
+])
+def test_incomplete_or_estimated_reports_do_not_fit_models(tmp_path, flags):
+    service = LearningService(Store(tmp_path / "excluded.db"))
+    result = service.train({"quality": "verified", "trades": trades(), **flags}, "excluded")
+    assert result["eligible_trades"] == 0
+    assert result["models"] == []
+    assert not service.store.list_records("ml_champions")
+
+
 def test_purged_holdout_not_reused_and_no_promotion_without_full_replay(tmp_path):
     service=LearningService(Store(tmp_path/"model.db"))
     result=service.train({"quality": "verified", "trades": trades()}, "synthetic-1")

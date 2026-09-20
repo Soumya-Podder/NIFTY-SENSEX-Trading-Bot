@@ -63,9 +63,9 @@ def test_backtest_budgets_are_not_capped_by_paper_settings():
     settings=Settings(_env_file=None)
     config=resolve_backtest_budgets({"capital":20000000,"risk_per_trade":5000},settings)
     assert config["capital"]==20000000 and config["risk_per_trade"]==5000
-    assert config["daily_loss_limit"]==pytest.approx(5000*800/750) and config["correlated_risk_limit"]==pytest.approx(5000*600/750)
-    assert settings.max_trade_risk_rupees==750 and settings.daily_loss_limit_rupees==800
-    assert settings.hard_daily_halt_rupees==800 and settings.max_correlated_risk_rupees==600
+    assert config["daily_loss_limit"]==pytest.approx(5000*1200/750) and config["correlated_risk_limit"]==pytest.approx(5000*600/750)
+    assert settings.max_trade_risk_rupees==750 and settings.daily_loss_limit_rupees==1200
+    assert settings.hard_daily_halt_rupees==1200 and settings.max_correlated_risk_rupees==600
     assert settings.planned_daily_loss_rupees==600 and settings.monthly_profit_target==20000
     assert settings.monthly_profit_target_basis=="gross"
     explicit=resolve_backtest_budgets({"risk_per_trade":700,"daily_loss_limit":9000,"correlated_risk_limit":8000},settings)
