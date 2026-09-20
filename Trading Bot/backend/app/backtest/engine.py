@@ -1,8 +1,8 @@
 """Chronological, shared-cash replay. Every position retains a fixed contract ID."""
 from dataclasses import dataclass,field
 from datetime import timedelta
+import hashlib
 import math
-import uuid
 import pandas as pd
 from ..pipeline import DecisionPipeline,finite,execution_context,plan_protection,plan_exit
 from ..expectancy import CostModel
@@ -20,14 +20,14 @@ from ..strategy_portfolio import PORTFOLIO_VERSION, STRATEGIES, rank_opportuniti
 @dataclass
 class BacktestConfig:
     initial_capital: float=30000
-    risk_per_trade: float=300
-    daily_loss_limit: float=850
-    correlated_risk_limit: float=300
+    risk_per_trade: float=600
+    daily_loss_limit: float=800
+    correlated_risk_limit: float=600
     max_positions: int=1
     cooldown_bars: int=3
     monthly_target: float=20000
     entry_cutoff: str="14:30"
-    exit_at: str="15:10"
+    exit_at: str="15:05"
     trade_from: str=""
     learning_policies: dict=field(default_factory=dict)
     plan_policy: PlanRiskPolicy | None=None
@@ -86,7 +86,11 @@ class BacktestEngine:
             gross=(price-p["entry"])*p["qty"]
             pnl=gross-p["entry_charges"]["total"]-fees["total"]
             cash+=price*p["qty"]-fees["total"]
-            trade={**p,"id":str(uuid.uuid4()),"exit":price,"exit_ts":stamp,"exit_premium":price,
+            identity="|".join(str(value) for value in (p.get("signal_id"),p.get("contract_id"),
+                pd.Timestamp(p["entry_ts"]).isoformat(),pd.Timestamp(stamp).isoformat(),p["qty"],
+                p["entry"],price,reason,p.get("strategy_version"),p.get("exit_policy")))
+            trade_id=hashlib.sha256(identity.encode()).hexdigest()[:24]
+            trade={**p,"id":trade_id,"exit":price,"exit_ts":stamp,"exit_premium":price,
                    "entry_premium":p["entry"],"quantity":p["qty"],"gross_pnl":gross,
                    "outcome_observed_at":stamp+timedelta(minutes=1),
                    "costs":p["entry_charges"]["total"]+fees["total"],"exit_charges":fees,"pnl":pnl,
@@ -332,7 +336,12 @@ class BacktestEngine:
                           parity_limitations=["Minute candles do not reconstruct the two-second bid/ask path.",
                                               "Historical selection uses dated fees and candle prices; unavailable spreads are not invented.",
                                               "Forward expectancy is not inferred from later trades; this replay uses frozen observation ranking."])
-        if any(q.get("charge_schedule", {}).get("estimated") for r in records for q in r.get("option_quotes") or []):
+        unverified_costs = any(
+            t.get("entry_charges", {}).get("kind") not in {"dated_schedule", "broker_calculator_receipt"}
+            or t.get("exit_charges", {}).get("kind") not in {"dated_schedule", "broker_calculator_receipt"}
+            for t in result["trades"]
+        )
+        if unverified_costs:
             result.update(learning_eligible=False, deployment_ready=False,
                           fidelity="observed_contract_estimated_fees",
                           estimation={"fees": "Scenario assumptions; not certified historical charges"})

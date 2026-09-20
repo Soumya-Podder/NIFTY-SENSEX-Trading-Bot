@@ -63,7 +63,8 @@ def test_small_research_dataset_cannot_lower_its_own_gates(tmp_path):
     for t in rows:
         t["quality"] = "research_net"
     result = service.train({"quality": "research_net", "trades": rows}, "tiny")
-    assert result["models"][0]["status"] == "INSUFFICIENT_SESSIONS"
+    assert result["eligible_trades"] == 0
+    assert result["models"] == []
     assert not service.store.list_records("ml_models")
 
 

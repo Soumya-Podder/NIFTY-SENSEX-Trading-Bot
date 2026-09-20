@@ -13,15 +13,15 @@ class CostModel:
         self.store = store
         self.memory = {}
 
-    def quote(self, contract, buy_price, sell_price, qty):
+    def _broker_quote(self, contract, buy_price, sell_price, qty, window, transaction):
         if not all(math.isfinite(v) for v in (qty,buy_price,sell_price)) or qty <= 0 or min(buy_price, sell_price) < 0 or max(buy_price, sell_price) <= 0:
             raise ValueError("Invalid charge calculation inputs")
         lot=int(contract["lot_size"])
         if lot<=0 or qty%lot: raise ValueError("Quantity is not a contract lot multiple")
         body = {"source":"N","data":{
             "exchange":contract["exchange"],"segment":"D",
-            "txn_type":"S" if sell_price else "B","qty":int(qty//lot),
-            "window":"SHORT_TRADE" if sell_price else "ONLY_BUY",
+            "txn_type":transaction,"qty":int(qty//lot),
+            "window":window,
             "security_id":str(contract["security_id"]),"sell_price":round(sell_price,2),
             "buy_price":round(buy_price,2),"product":"I","instrument":"OPTIDX","exchange1":""}}
         day=datetime.now(timezone.utc).date().isoformat()
@@ -44,11 +44,23 @@ class CostModel:
         result={name:float(raw[field]) for name,field in fields.items()}
         if any(not math.isfinite(v) or v<0 for v in result.values()): raise RuntimeError("Invalid broker charges")
         result["broker_rounding_adjustment"]=result["total"]-sum(v for k,v in result.items() if k!="total")
-        result.update(source=self.endpoint,as_of=day,kind="broker_estimate",quantity=int(qty))
+        result.update(source=self.endpoint,as_of=day,kind="broker_calculator_quote",quantity=int(qty),
+                      buy_price=round(buy_price,2),sell_price=round(sell_price,2),
+                      request_fingerprint=hashlib.sha256(json.dumps(body,sort_keys=True).encode()).hexdigest())
         if len(self.memory)>2000: self.memory.clear()
         self.memory[key]=result
         if self.store: self.store.cache_put(key,result,ttl=3600)
         return result
+
+    def quote(self, contract, buy_price, sell_price, qty):
+        return self._broker_quote(contract,buy_price,sell_price,qty,"SHORT_TRADE","S")
+
+    def quote_buy(self, contract, buy_price, qty):
+        return self._broker_quote(contract,buy_price,0.,qty,"ONLY_BUY","B")
+
+    @staticmethod
+    def historical_key(side, price, qty):
+        return f"{str(side).lower()}|{float(price):.8f}|{int(qty)}"
 
     @staticmethod
     def historical(contract, price, qty, side, timestamp):
@@ -57,6 +69,21 @@ class CostModel:
         day=str(timestamp)[:10]
         if not schedule or not schedule.get("source") or not (schedule.get("valid_from", "9999") <= day <= schedule.get("valid_to", "")):
             raise ValueError("historical_charge_schedule_missing")
+        observed=(schedule.get("observed_costs") or {}).get(CostModel.historical_key(side,price,qty))
+        if observed is not None:
+            required=("brokerage","exchange","stt","sebi","ipft","stamp_duty","gst","total")
+            values=[number for number in (float(observed.get(k,-1)) for k in required)]
+            adjustment=float(observed.get("broker_rounding_adjustment",math.nan))
+            if (observed.get("source") != CostModel.endpoint or observed.get("trade_day") != day
+                    or observed.get("kind") != "broker_calculator_receipt"
+                    or observed.get("side") != side.lower() or not observed.get("request_fingerprint")
+                    or int(observed.get("quantity",0)) != int(qty)
+                    or abs(float(observed.get("price",-1))-float(price)) > 1e-8
+                    or not math.isfinite(adjustment)
+                    or abs(values[-1]-sum(values[:-1])-adjustment) > .001
+                    or any(not math.isfinite(v) or v<0 for v in values)):
+                raise ValueError("historical_charge_receipt_invalid")
+            return {**observed,"quantity":int(qty),"as_of":day}
         rates=schedule.get(side.lower(),{})
         names=("exchange","stt","sebi","ipft","stamp_duty")
         if any(name not in rates for name in names) or "brokerage" not in schedule or "gst_rate" not in schedule:

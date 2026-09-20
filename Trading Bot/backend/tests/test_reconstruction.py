@@ -238,7 +238,7 @@ def test_intrabar_exit_proceeds_cannot_fund_another_opening_fill():
     assert replay.cash==90
 
 
-def test_research_replay_net_costs_and_learning_ingestion(tmp_path):
+def test_research_replay_net_costs_are_excluded_from_learning(tmp_path):
     from app.ai import LearningService
     dates = pd.date_range("2026-08-31 09:15", "2026-08-31 15:05", freq="min", tz="Asia/Kolkata")
     frame = pd.DataFrame([{"timestamp": t, "symbol": "NIFTY", "open": 100, "high": 101, "low": 99, "close": 100,
@@ -283,5 +283,6 @@ def test_research_replay_net_costs_and_learning_ingestion(tmp_path):
     service = LearningService(store)
     report = report_from_run(result, cfg)
     train_res = service.train(report, "test-net-run")
-    assert train_res["eligible_trades"] == 1
-    assert train_res["excluded_trades"] == 0
+    assert train_res["eligible_trades"] == 0
+    assert train_res["excluded_trades"] == 1
+    assert train_res["models"] == []

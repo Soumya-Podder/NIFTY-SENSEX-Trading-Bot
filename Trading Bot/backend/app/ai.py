@@ -13,6 +13,7 @@ from .session import now_ist, local_time
 from .config import settings
 from .learning_validation import VERSION as GUARD_VERSION, MIN_TRAIN, MIN_TEST, MIN_DAYS, replay_evidence
 from .provenance import has_synthetic_options
+from .expectancy import CostModel
 
 SCHEMA = "entry_features_v1"
 FEATURES = ("adx", "atr_pct", "vwap_dist_atr", "relative_volume", "ema_slope_atr",
@@ -46,6 +47,75 @@ def extract_features(row, signal, contract, now):
 
 def scope(trade):
     return "|".join(str(trade.get(k) or "unknown") for k in ("symbol", "strategy_version", "exit_policy"))
+
+
+TRAINING_GATES = (
+    "verified_report_quality", "complete_report_status", "report_without_issues",
+    "resolved_exits", "fixed_contract_provenance", "verified_net_cost_outcome",
+    "causal_entry_features",
+)
+
+
+def training_gate_results(report, trade):
+    """Return the seven auditable gates that precede any model fitting."""
+    feature = trade.get("entry_features") or {}
+    contract_id = str(trade.get("contract_id") or "")
+    entry_charges = trade.get("entry_charges") or {}
+    exit_charges = trade.get("exit_charges") or {}
+    day = str(trade.get("entry_ts") or "")[:10]
+    quantity = int(number(trade.get("quantity", trade.get("qty"))) or 0)
+    def verified_charge(charge, side, price):
+        kind=charge.get("kind")
+        common=(bool(charge.get("source")) and charge.get("as_of")==day
+                and int(number(charge.get("quantity")) or 0)==quantity
+                and number(charge.get("total")) is not None and number(charge.get("total"))>=0)
+        if kind=="dated_schedule":
+            return common
+        components=("brokerage","exchange","stt","sebi","ipft","stamp_duty","gst")
+        component_values=[number(charge.get(name)) for name in components]
+        adjustment=number(charge.get("broker_rounding_adjustment"))
+        return (kind=="broker_calculator_receipt" and common
+                and charge.get("source")==CostModel.endpoint and charge.get("trade_day")==day
+                and charge.get("side")==side and bool(charge.get("request_fingerprint"))
+                and number(charge.get("price")) is not None
+                and number(price) is not None
+                and abs(number(charge.get("price"))-number(price))<1e-8
+                and all(value is not None and value>=0 for value in component_values)
+                and adjustment is not None
+                and abs(number(charge.get("total"))-sum(component_values)-adjustment)<.001)
+    provenance = (
+        bool(contract_id) and not contract_id.lower().startswith(("rolling:", "dynamic:"))
+        and str(trade.get("security_id") or "").isdigit()
+        and trade.get("exchange") in {"NSE", "BSE"}
+        and bool(trade.get("metadata_source")) and bool(trade.get("price_source"))
+        and not has_synthetic_options({k: trade.get(k) for k in ("contract_id", "metadata_source", "price_source")})
+        and bool(trade.get("expiry")) and number(trade.get("strike")) is not None
+        and number(trade.get("lot_size")) is not None and number(trade.get("tick_size")) is not None
+        and str(trade.get("metadata_valid_from") or "9999") <= day <= str(trade.get("metadata_valid_to") or "")
+    )
+    net_cost = (
+        trade.get("quality") == "verified" and trade.get("learning_eligible") is not False
+        and not trade.get("estimated_exit") and not report.get("estimation")
+        and all(number(trade.get(k)) is not None for k in ("pnl", "gross_pnl", "costs"))
+        and number(trade.get("costs")) >= 0
+        and abs(number(trade.get("pnl")) - (number(trade.get("gross_pnl")) - number(trade.get("costs")))) < .01
+        and verified_charge(entry_charges,"buy",trade.get("entry"))
+        and verified_charge(exit_charges,"sell",trade.get("exit"))
+        and abs(number(trade.get("costs"))-number(entry_charges.get("total"))-number(exit_charges.get("total")))<.01
+    )
+    causal = (
+        feature.get("schema") == SCHEMA and isinstance(feature.get("values"), dict)
+        and sum(number(feature["values"].get(k)) is not None for k in FEATURES) >= 6
+    )
+    return {
+        "verified_report_quality": report.get("quality") == "verified",
+        "complete_report_status": report.get("status", "complete") == "complete",
+        "report_without_issues": not report.get("issues"),
+        "resolved_exits": not report.get("unresolved") and not report.get("unresolved_positions"),
+        "fixed_contract_provenance": provenance,
+        "verified_net_cost_outcome": net_cost,
+        "causal_entry_features": causal,
+    }
 
 
 class MLTradeQualityModel:
@@ -126,17 +196,15 @@ class LearningService:
         outcomes = report.get("trades", [])
         synthetic = has_synthetic_options(report)
         eligible = []
+        gate_audit = {name: {"passing": 0, "failing": 0} for name in TRAINING_GATES}
         for t in outcomes:
             f = t.get("entry_features") or {}
+            gates = training_gate_results(report, t)
+            for name, passed in gates.items():
+                gate_audit[name]["passing" if passed else "failing"] += 1
             try:
-                valid = (not synthetic and report.get("learning_eligible") is not False and not report.get("estimation")
-                    and t.get("learning_eligible") is not False and not t.get("estimated_exit")
-                    and report.get("status", "complete") == "complete" and not report.get("issues") and not report.get("unresolved")
-                    and report.get("quality") == "verified" and report.get("pnl_basis", "net") == "net" and t.get("quality") == "verified" and not t.get("partial") and
-                    f.get("schema") == SCHEMA and isinstance(f.get("values"), dict) and
-                    sum(number(f["values"].get(k)) is not None for k in FEATURES) >= 6 and
-                    all(number(t.get(k)) is not None for k in ("pnl", "gross_pnl", "costs")) and t["costs"] >= 0 and
-                    abs(t["pnl"]-(t["gross_pnl"]-t["costs"])) < .01 and
+                valid = (not synthetic and report.get("learning_eligible") is not False
+                    and all(gates.values()) and report.get("pnl_basis", "net") == "net" and not t.get("partial") and
                     local_time(f["bar_at"]) + timedelta(minutes=1) <= local_time(f["observed_at"]) <= local_time(t["entry_ts"]) <= local_time(t["exit_ts"]) and
                     local_time(t["entry_ts"]) < local_time(t.get("outcome_observed_at", t["exit_ts"])) < now)
             except (ValueError, TypeError, KeyError):
@@ -145,6 +213,7 @@ class LearningService:
                 eligible.append(t)
         result = {"run_id": run_id, "created_at": now.isoformat(), "status": "INSUFFICIENT_EVIDENCE",
                   "eligible_trades": len(eligible), "excluded_trades": len(outcomes)-len(eligible), "models": [],
+                  "gate_audit": gate_audit,
                   "input_report_quality": report.get("quality"), "source_report_id": report.get("run_id", run_id),
                   "dataset_id": report.get("config", {}).get("dataset_id"),
                   "dataset_fingerprint": hashlib.sha256(json.dumps(eligible, sort_keys=True, default=str).encode()).hexdigest(),

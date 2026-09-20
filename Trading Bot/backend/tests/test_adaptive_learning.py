@@ -66,7 +66,16 @@ def trades():
             result.append({"id": f"{day}:{i}", "signal_id": f"{day}:{i}", "entry_ts": stamp.isoformat(),
                            "exit_ts": (stamp+timedelta(minutes=10)).isoformat(), "entry_features": feature,
                            "quality": "verified", "costs": 10, "gross_pnl": pnl+10, "pnl": pnl,
-                           "symbol": "NIFTY", "strategy_version": "test-only", "exit_policy": VERSION})
+                           "symbol": "NIFTY", "strategy_version": "test-only", "exit_policy": VERSION,
+                           "contract_id": f"NSE:{100000+day}", "security_id": 100000+day, "exchange": "NSE",
+                           "expiry": "2026-12-31", "strike": 25000, "lot_size": 65, "tick_size": .05,
+                           "metadata_source": "dated_test_master", "metadata_valid_from": "2025-01-01",
+                           "metadata_valid_to": "2025-12-31", "price_source": "observed_test_candles",
+                           "quantity":65,
+                           "entry_charges": {"kind":"dated_schedule","source":"unit_test_schedule",
+                                             "as_of":str(stamp.date()),"quantity":65,"total":5},
+                           "exit_charges": {"kind":"dated_schedule","source":"unit_test_schedule",
+                                            "as_of":str(stamp.date()),"quantity":65,"total":5}})
     return result
 
 
@@ -91,6 +100,15 @@ def test_incomplete_or_estimated_reports_do_not_fit_models(tmp_path, flags):
     assert result["eligible_trades"] == 0
     assert result["models"] == []
     assert not service.store.list_records("ml_champions")
+
+
+def test_rolling_contract_identity_fails_the_explicit_provenance_gate(tmp_path):
+    data = trades()[:1]
+    data[0]["contract_id"] = "rolling:NIFTY:WEEK:1:ATM:CALL"
+    result = LearningService(Store(tmp_path / "rolling.db")).train(
+        {"quality": "verified", "status": "complete", "trades": data}, "rolling")
+    assert result["eligible_trades"] == 0
+    assert result["gate_audit"]["fixed_contract_provenance"] == {"passing": 0, "failing": 1}
 
 
 def test_purged_holdout_not_reused_and_no_promotion_without_full_replay(tmp_path):

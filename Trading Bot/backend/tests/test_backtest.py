@@ -218,7 +218,8 @@ def test_shared_portfolio_cannot_double_spend(once_per_session):
 
 def test_unresolved_exit_is_not_dropped(once_per_session):
     frame=historical_fixture()
-    frame.at[len(frame)-1,"option_quotes"]=[]
+    for index in frame.index[frame.timestamp.dt.strftime("%H:%M") >= "15:05"]:
+        frame.at[index,"option_quotes"]=[]
     result=BacktestEngine().run(frame)
     assert result["quality"]=="incomplete" and len(result["unresolved"])==1
     assert result["metrics"]["total_pnl"] is None
