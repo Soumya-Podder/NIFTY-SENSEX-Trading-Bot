@@ -120,10 +120,10 @@
     "semantic_hash": "43568807d6e277446c340d3443ff6d96"
   },
   "Trading Bot/backend/app/broker.py": {
-    "mtime": 1789488873.9003556,
-    "seen": 1789833462.6602054,
-    "ast_hash": "91630899e1e11c6e93ae0d382a6a0d73",
-    "semantic_hash": "91630899e1e11c6e93ae0d382a6a0d73"
+    "mtime": 1790183454.3026323,
+    "seen": 1790183589.9641237,
+    "ast_hash": "ae3594437cceca450995be51321c686b",
+    "semantic_hash": ""
   },
   "Trading Bot/backend/app/circuit_breaker.py": {
     "mtime": 1788527635.2633388,
@@ -132,9 +132,9 @@
     "semantic_hash": "c52866a77e482615ec3aede717855ab9"
   },
   "Trading Bot/backend/app/config.py": {
-    "mtime": 1789905503.7724936,
-    "seen": 1789906799.9499235,
-    "ast_hash": "25219b8fd465cca717f7f3d63247527c",
+    "mtime": 1790183387.3276932,
+    "seen": 1790183589.9641237,
+    "ast_hash": "b0eb96290fa41be6757e995f2f06723e",
     "semantic_hash": ""
   },
   "Trading Bot/backend/app/expectancy.py": {
@@ -174,10 +174,10 @@
     "semantic_hash": "70926ce92f4a5b35eba587bbe918c3d6"
   },
   "Trading Bot/backend/app/main.py": {
-    "mtime": 1789833331.8860435,
-    "seen": 1789833462.6602054,
-    "ast_hash": "900229e559ec68a3a962ff1754a286eb",
-    "semantic_hash": "900229e559ec68a3a962ff1754a286eb"
+    "mtime": 1790183454.3046398,
+    "seen": 1790183589.9641237,
+    "ast_hash": "8cdf247b3dfeb7ed663cf878c84aebc3",
+    "semantic_hash": ""
   },
   "Trading Bot/backend/app/market_calendar.py": {
     "mtime": 1789275493.588776,
@@ -204,10 +204,10 @@
     "semantic_hash": "499999fc6ad2f95e88fe8f94c554d089"
   },
   "Trading Bot/backend/app/paper_engine.py": {
-    "mtime": 1789277027.208053,
-    "seen": 1789833462.6602054,
-    "ast_hash": "2434597ba0cb270673e6e9faee28e46a",
-    "semantic_hash": "2434597ba0cb270673e6e9faee28e46a"
+    "mtime": 1790182716.7334635,
+    "seen": 1790182804.2686474,
+    "ast_hash": "0a0399dbecb9d0061681e88924858698",
+    "semantic_hash": ""
   },
   "Trading Bot/backend/app/paper_performance.py": {
     "mtime": 1789275604.969966,
@@ -438,10 +438,10 @@
     "semantic_hash": "c236a2cfbfabf542e9fde8291169f132"
   },
   "Trading Bot/backend/tests/test_runtime.py": {
-    "mtime": 1789325077.579777,
-    "seen": 1789833462.6602054,
-    "ast_hash": "821c2431d32f6af436c72fc5dfe68333",
-    "semantic_hash": "821c2431d32f6af436c72fc5dfe68333"
+    "mtime": 1790182716.734467,
+    "seen": 1790182804.2696452,
+    "ast_hash": "ca334d9c677eff02e16a1b3e0b130c31",
+    "semantic_hash": ""
   },
   "Trading Bot/backend/tests/test_specialist_agents.py": {
     "mtime": 1789487473.2864454,
@@ -486,9 +486,9 @@
     "semantic_hash": "62a96a0de02dc056705e414750d31d29"
   },
   "Trading Bot/frontend/src/main.tsx": {
-    "mtime": 1789907247.9625683,
-    "seen": 1789909530.0295289,
-    "ast_hash": "d9d5d22c88519e72fec6391511232044",
+    "mtime": 1790183454.305638,
+    "seen": 1790183589.9641237,
+    "ast_hash": "fabb02f8a4181db0bd81fe0ed05d8d1b",
     "semantic_hash": ""
   },
   "Trading Bot/frontend/src/vite-env.d.ts": {
@@ -660,9 +660,9 @@
     "semantic_hash": ""
   },
   "Trading Bot/README.md": {
-    "mtime": 1789905503.8030355,
-    "seen": 1789906799.9499235,
-    "ast_hash": "8fa020c4be5c261f2d8c7814b1268330",
+    "mtime": 1790183387.5765734,
+    "seen": 1790183589.9641237,
+    "ast_hash": "ed7b42c6e3812620940cfb5dc9e79642",
     "semantic_hash": ""
   },
   "Trading Bot/REMEDIATION_STATUS.md": {
@@ -750,9 +750,21 @@
     "semantic_hash": ""
   },
   "Trading Bot/BACKTEST_EVIDENCE_2026-09-20.md": {
-    "mtime": 1789906831.9368112,
-    "seen": 1789907057.9078352,
-    "ast_hash": "07ee3c5392332a3a80e84d76baf7adbc",
+    "mtime": 1790004450.451138,
+    "seen": 1790181556.8324838,
+    "ast_hash": "84b0d11f2b927a2b336ecf695128e2a7",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/app/telegram.py": {
+    "mtime": 1790183387.3266962,
+    "seen": 1790183589.9641237,
+    "ast_hash": "a9cbf5c4c241484442d330b87c866bbc",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/tests/test_telegram.py": {
+    "mtime": 1790183387.5745697,
+    "seen": 1790183589.9641237,
+    "ast_hash": "fac2db44e11401c6cb7f7ad23d64c65d",
     "semantic_hash": ""
   }
 }

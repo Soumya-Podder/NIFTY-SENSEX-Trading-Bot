@@ -59,7 +59,7 @@ def test_plan_loss_spend_does_not_refill_after_winner_or_restart(tmp_path):
     broker.close(second["id"],quote(contract(),clock,bid=120),"TARGET",clock["now"])
     assert broker.snapshot()["loss_ledger"]["loss_spend"]==140
     restored=PaperBroker(store,30000,TestFees(),clock=lambda:clock["now"],policy=broker.policy)
-    assert restored.snapshot()["remaining_loss_allocation"]==460
+    assert restored.snapshot()["remaining_loss_allocation"]==860
     assert restored.snapshot()["loss_ledger"]["entries"]==2
 
 

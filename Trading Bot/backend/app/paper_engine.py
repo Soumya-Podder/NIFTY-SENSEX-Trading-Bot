@@ -1,5 +1,6 @@
 import threading
 import time
+import math
 from datetime import timedelta
 import pandas as pd
 from .pipeline import DecisionPipeline,execution_context,plan_protection,plan_exit
@@ -169,17 +170,26 @@ class PaperEngine:
                         self.status["persistence_error"]=type(persist_exc).__name__
             self.stop_event.wait(2)
 
+    def _refresh_runtime_credentials(self,now):
+        if not getattr(self.gateway,"credential_provider",None): return
+        self.gateway.refresh_credentials()
+        credentials=self.gateway.credentials
+        changed=self.market.refresh_credentials(*credentials) if self.market else False
+        if changed or self.last_credential_generation!=self.gateway.credential_generation:
+            with self.lock:
+                self.quotes.clear(); self.frames.clear(); self.protections.clear(); self.processed.clear()
+            # Errors produced with the previous token no longer describe the
+            # current client. A new request may set a fresh error afterwards.
+            self.status.pop("data_error",None)
+            for symbol_status in self.status.get("data_symbols",{}).values():
+                symbol_status.pop("error",None)
+            self.last_credential_generation=self.gateway.credential_generation
+        self.status["credentials"]={"checked_at":now.isoformat(),"generation":self.gateway.credential_generation,
+            "configured":all(credentials),"source":"project .env"}
+
     def cycle(self):
         now=now_ist(); session=self._session()
-        if getattr(self.gateway,"credential_provider",None):
-            self.gateway.refresh_credentials()
-            credentials=self.gateway.credentials
-            changed=self.market.refresh_credentials(*credentials) if self.market else False
-            if changed or self.last_credential_generation!=self.gateway.credential_generation:
-                with self.lock: self.quotes.clear(); self.frames.clear(); self.protections.clear(); self.processed.clear()
-                self.last_credential_generation=self.gateway.credential_generation
-            self.status["credentials"]={"checked_at":now.isoformat(),"generation":self.gateway.credential_generation,
-                "configured":all(credentials),"source":"project .env"}
+        self._refresh_runtime_credentials(now)
         if self.broker.policy: self._freeze_policies(now)
         self.status.update(last_cycle=now.isoformat(),session=session)
         previous_day=self.broker.snapshot()["session_date"]
@@ -293,27 +303,33 @@ class PaperEngine:
                 if self.broker.policy:
                     with self.lock: retest=self.protections.get((signal["id"],contract["contract_id"]))
                     signal=plan_protection(signal,contract,retest,price)
-                fee=self.broker.cost.quote(contract,price,price*(1-signal["stop_percent"]),lot)
+                stop_price=signal.get("stop_price"); target_price=signal.get("target_price")
+                if not isinstance(stop_price,(int,float)) or not math.isfinite(stop_price) or not 0<stop_price<price:
+                    raise ValueError("No market-derived stop is available; fixed-percentage stops are disabled")
+                if not isinstance(target_price,(int,float)) or not math.isfinite(target_price) or target_price<=price:
+                    raise ValueError("No valid target is available")
+                stop_fraction=(price-stop_price)/price
+                fee=self.broker.cost.quote(contract,price,stop_price,lot)
                 same_direction=sum(p["risk_rupees"] for p in account["positions"] if p["option_type"]==signal["option_type"])
                 if self.broker.policy:
                     if account["positions"] or self.broker.policy.entry_veto(account["loss_ledger"],now): continue
                     quantity=lot
                 else:
-                    decision=self.risk.approve(price,signal["stop_percent"],lot,account["session_pnl"],account["open_positions"],
+                    decision=self.risk.approve(price,stop_fraction,lot,account["session_pnl"],account["open_positions"],
                         cash=account["cash"],open_risk=account["open_risk_rupees"],estimated_cost=fee["total"],
                         exit_slippage=contract["ask"]-contract["bid"],correlated_risk=same_direction,
                         correlated_limit=self.settings.max_correlated_risk_rupees,halted=account["halted"])
                     if not decision.approved: continue
                     quantity=min(decision.quantity,int(contract["ask_qty"])//lot*lot)
                 # Recalculate exact quantity charges; percentage estimates are not used for risk.
-                fee=self.broker.cost.quote(contract,price,price*(1-signal["stop_percent"]),quantity)
-                risk=quantity*(price*signal["stop_percent"]+contract["ask"]-contract["bid"])+fee["total"]
+                fee=self.broker.cost.quote(contract,price,stop_price,quantity)
+                risk=quantity*((price-stop_price)+contract["ask"]-contract["bid"])+fee["total"]
                 budget=(min(self.broker.policy.trade_risk,self.broker.policy.remaining(account["loss_ledger"],account["open_risk_rupees"])) if self.broker.policy else
                         available_risk(self.settings.max_trade_risk_rupees,self.settings.daily_loss_limit_rupees,
                             account["session_pnl"],account["open_risk_rupees"],self.settings.max_correlated_risk_rupees,same_direction))
                 if risk>budget: continue
                 matched=[t for t in outcomes if t.get("setup")==signal["setup"] and t.get("regime")==signal["regime"]]
-                ev=ExpectancyEngine().evaluate(matched,price*signal["target_percent"]*quantity,price*signal["stop_percent"]*quantity,fee["total"])
+                ev=ExpectancyEngine().evaluate(matched,(target_price-price)*quantity,(price-stop_price)*quantity,fee["total"])
                 if self.broker.policy:
                     matched=[t for t in matched if t.get("strategy_version")==signal["strategy_version"] and str(t.get("exit_ts",""))<now.isoformat()]
                     ev=ExpectancyEngine().evaluate_net(matched)

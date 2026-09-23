@@ -30,6 +30,7 @@ from .market_calendar import calendar_info
 from .quote_recorder import QuoteRecorder
 from .forward_comparison import ForwardComparison
 from .autonomous_agent import AutonomousTradingAgent, get_autonomous_agent
+from .telegram import TelegramNotifier
 import threading
 import uuid
 import asyncio
@@ -38,7 +39,10 @@ ROOT=Path(__file__).resolve().parents[2]
 store=Store(ROOT/"backend"/"trading_bot.db")
 gateway=DhanGateway(settings,store,credential_provider=current_credentials)
 plan_policy=PlanRiskPolicy.from_settings(settings)
-paper=PaperBroker(store,settings.paper_capital,CostModel(store),settings.max_quote_age_seconds,entry_cutoff=settings.entry_cutoff,policy=plan_policy)
+telegram=TelegramNotifier(settings.telegram_bot_token,settings.telegram_chat_id,
+    settings.telegram_enabled,settings.telegram_timeout_seconds)
+paper=PaperBroker(store,settings.paper_capital,CostModel(store),settings.max_quote_age_seconds,
+    entry_cutoff=settings.entry_cutoff,policy=plan_policy,notifier=telegram)
 market_data=DhanMarketData(settings.dhan_client_id,settings.dhan_access_token,"NIFTY,SENSEX",gateway,store)
 quote_recorder=QuoteRecorder(ROOT/"data"/"market_observations.db")
 market_data.recorder=quote_recorder
@@ -65,6 +69,7 @@ async def lifespan(app):
     for item in reversed(store.list_records("events",80)): event_bus.publish(item)
     paper.control(enabled=settings.paper_autostart)
     quote_recorder.start()
+    telegram.start()
     engine.start(); market_data.start()
     autonomous_agent.start()
     if isinstance(engine,MultiStrategyPaperEngine): forward_comparison.start()
@@ -75,6 +80,7 @@ async def lifespan(app):
     autonomous_agent.stop()
     engine.stop(); jobs.stop(); market_data.stop()
     quote_recorder.stop()
+    telegram.stop()
     if llm_client:
         await llm_client.close()
 
@@ -133,6 +139,10 @@ def last_report():
 @app.get("/api/learning/model")
 def learning_model():
     return json_safe(ml_learning.status())
+
+
+@app.get("/api/telegram/status")
+def telegram_status(): return telegram.status()
 
 
 @app.post("/api/learning/train",status_code=202)
@@ -364,6 +374,7 @@ def dashboard():
     events=event_bus.recent(80); learned=store.learning_snapshot(); account=paper.snapshot()
     # Reports are fetched by ID, not overwritten by every two-second market refresh.
     result={**mode(),"generated_at":now_ist().isoformat(),"market":market_data.snapshot(),"account":account,
+        "telegram":telegram.status(),
         "engine":dict(engine.status),"risk":risk(),"events":events,"implementation":implementation_status(),"ml_learning":learning_model(),
         "strategies":engine.describe_strategies() if hasattr(engine,"describe_strategies") else None,
         "pipelines":{symbol:pipeline_from_events(events,symbol) for symbol in ("NIFTY","SENSEX")},

@@ -42,6 +42,29 @@ def test_gateway_discards_response_from_rotated_credentials(tmp_path,monkeypatch
     assert g.credential_generation==1
 
 
+def test_rotated_credentials_clear_stale_data_errors(tmp_path):
+    broker,store,_=plan_account(tmp_path)
+    credentials=['test','new-test-token']
+    class Gateway:
+        credential_provider=True
+        credential_generation=0
+        credentials=('test','old-test-token')
+        def refresh_credentials(self):
+            self.credentials=tuple(credentials)
+            self.credential_generation+=1
+            return True
+    market=SimpleNamespace(refresh_credentials=lambda *_:True)
+    engine=PaperEngine(Settings(_env_file=None),store,Gateway(),broker,market)
+    engine.status.update(data_error="DH-901 Invalid_Authentication",
+                         data_symbols={"NIFTY":{"error":"DH-901 Invalid_Authentication"}})
+
+    engine._refresh_runtime_credentials(datetime.now(IST))
+
+    assert "data_error" not in engine.status
+    assert "error" not in engine.status["data_symbols"]["NIFTY"]
+    assert engine.status["credentials"]["generation"]==1
+
+
 def test_option_stream_requires_depth_and_explicit_freshness():
     feed=DhanMarketData('test','test','NIFTY,SENSEX')
     c={**contract(),'security_id':'999','exchange':'NSE'}

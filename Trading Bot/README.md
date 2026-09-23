@@ -82,7 +82,7 @@ freshness gates, persistence checks and Risk Sentinel remain authoritative.
 - Session 09:15–15:05 IST; the opening 15 minutes build the range. Entries stop
   at 14:30. The exit loop continues when entries are paused or the account is halted.
 - Current `.env` defaults: ₹600 maximum planned risk per trade, ₹600 same-direction
-  correlated open-risk cap, ₹800 daily loss/hard halt, ₹600 planned-loss allocation
+  correlated open-risk cap, ₹1,200 daily loss/hard halt, ₹1,000 planned-loss allocation
   plus a ₹200 execution reserve, and a ₹20,000 monthly gross target. Charges and existing
   exposure reduce capacity; these are configurable limits, not guarantees against
   gaps or a missing exit quote.
@@ -187,6 +187,20 @@ open,high,low,close,volume,oi,
 underlying_open,underlying_high,underlying_low,underlying_close,underlying_volume,
 metadata_source,metadata_valid_from,metadata_valid_to,price_source,charge_schedule
 ```
+
+### Optional Telegram paper alerts
+
+Set these values in `Trading Bot/.env`, then restart the backend:
+
+```dotenv
+TELEGRAM_ENABLED=true
+TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_CHAT_ID=your_chat_or_channel_id
+```
+
+Telegram receives only confirmed simulated entry and exit fills. Every alert includes
+the locally calculated current paper-session P&L; exit alerts also include trade net P&L. Message
+delivery is asynchronous and never authorizes or blocks an order.
 
 Use IST timestamps or timezone-qualified timestamps, ISO expiry/validity dates,
 CALL/PUT, prices/tick sizes in rupees, and actual historical lot sizes. Contract IDs

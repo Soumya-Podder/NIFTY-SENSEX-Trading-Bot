@@ -319,6 +319,15 @@ function App() {
       liquidity and risk limits remain enforced. Saved legacy runs are not
       results for this plan.
      </p>
+     <p>
+      Telegram alerts: {data.telegram?.enabled
+       ? data.telegram?.configured
+        ? data.telegram?.worker_alive ? "enabled and running" : "enabled; worker stopped"
+        : "enabled but credentials are missing"
+       : "disabled"}
+      {data.telegram?.last_error ? ` · last delivery error: ${data.telegram.last_error}` : ""}
+      {data.telegram?.sent ? ` · messages sent this run: ${data.telegram.sent}` : ""}
+     </p>
      <details>
       <summary>Implemented controls and remaining work</summary>
       <ul>
@@ -384,16 +393,51 @@ function App() {
    </nav>
 
     {tab === "agentic" ? (
-    <><AgentCanvas data={data} online={online} onDetail={setDetail} /><LearningMonitor data={data?.learning_monitor} /></>
-   ) : tab === "monitor" ?
     <>
-     <StrategyPortfolio data={data?.strategies} />
+     <AgentCanvas data={data} online={online} onDetail={setDetail} />
      <LearningMonitor data={data?.learning_monitor} />
      <ModelLearning
       data={data?.ml_learning}
       busy={busy}
       onTrain={() => mutate("/learning/train", {})}
      />
+     <Agents
+      rows={data?.agent_metrics || []}
+      policies={data?.active_policies || {}}
+      onDetail={setDetail}
+     />
+     <LearningRegistry
+      rows={data?.learning_candidates || []}
+      busy={busy}
+      onReview={async (key: string, action: string, reviewer: string) =>
+       mutate(`/learning/candidates/${encodeURIComponent(key)}/review`, {
+        action,
+        reviewed_by: reviewer,
+       })
+      }
+     />
+     <section className="panel spaced">
+      <Head title="Latest decisions" kicker="INPUTS / CONTEXTS / REJECTIONS" />
+      {events.length ?
+       events.slice(0, 20).map((e: Data) => (
+        <button className="stream-row" key={e.id} onClick={() => setDetail(e)}>
+         <div className="stream-body">
+          <div>
+           <strong>{e.symbol} · {e.agent}</strong>
+           <span className={e.status === "REJECTED" ? "negative" : "accent"}>{e.status}</span>
+          </div>
+          <p>{e.summary}</p>
+          <small className="muted">{stamp(e.timestamp)} · {e.context || "No context"}</small>
+         </div>
+         <span>›</span>
+        </button>
+       ))
+      : <Empty>No evaluated cycles yet.</Empty>}
+     </section>
+    </>
+   ) : tab === "monitor" ?
+    <>
+     <StrategyPortfolio data={data?.strategies} />
      {data?.engine?.scans && (
       <section className="panel spaced">
        <Head title="Current market scans" kicker="LIVE ENGINE STATUS" />
@@ -444,38 +488,7 @@ function App() {
       </Notice>
      ))}
 
-     <section className="kpi-grid">
-      <Kpi
-       label="Available cash"
-       value={money(account.cash)}
-       sub="Paper account"
-      />
-      <Kpi
-       label="Equity"
-       value={money(account.equity)}
-       sub={
-        account.valuation_complete ?
-         "Marked at observed bid"
-        : "Incomplete / stale valuation"
-       }
-      />
-
-      <Kpi
-       label="Session P&L"
-       value={money(account.session_pnl)}
-       sub="Includes charged fees; open exit fees not accrued"
-      />
-      <Kpi
-       label="Realized net P&L"
-       value={money(account.realized_pnl)}
-       sub="After broker-estimated charges"
-      />
-      <Kpi
-       label="Total charges"
-       value={money(account.charges)}
-       sub="Current Dhan charge estimates"
-      />
-     </section>
+     <PaperPnlPanel account={account} trades={trades} />
 
      <div className="insight-row">
       <Kpi
@@ -544,48 +557,6 @@ function App() {
         available cash and risk capacity.
        </Empty>
       }
-     </section>
-
-     <Agents
-      rows={data?.agent_metrics || []}
-      policies={data?.active_policies || {}}
-      onDetail={setDetail}
-     />
-
-     <LearningRegistry
-      rows={data?.learning_candidates || []}
-      busy={busy}
-      onReview={async (key: string, action: string, reviewer: string) =>
-       mutate(`/learning/candidates/${encodeURIComponent(key)}/review`, {
-        action,
-        reviewed_by: reviewer,
-       })
-      }
-     />
-
-     <section className="panel spaced">
-      <Head title="Latest decisions" kicker="INPUTS / CONTEXTS / REJECTIONS" />
-      {events.length ?
-       events.slice(0, 20).map((e: Data) => (
-        <button className="stream-row" key={e.id} onClick={() => setDetail(e)}>
-         <div className="stream-body">
-          <div>
-           <strong>
-            {e.symbol} · {e.agent}
-           </strong>
-           <span className={e.status === "REJECTED" ? "negative" : "accent"}>
-            {e.status}
-           </span>
-          </div>
-          <p>{e.summary}</p>
-          <small className="muted">
-           {stamp(e.timestamp)} · {e.context || "No context"}
-          </small>
-         </div>
-         <span>›</span>
-        </button>
-       ))
-      : <Empty>No evaluated cycles yet.</Empty>}
      </section>
 
      <Trades
@@ -2262,6 +2233,105 @@ function Chart({ title, points }: Data) {
      </svg>
     </>
    : <Empty>No chart data.</Empty>}
+  </section>
+ );
+}
+
+function PaperPnlPanel({ account, trades }: Data) {
+ const daily = new Map<string, number>();
+ for (const [day, value] of Object.entries(account.daily_results || {})) {
+  if (Number.isFinite(value)) daily.set(day, Number(value));
+ }
+ if (account.session_date && Number.isFinite(account.session_pnl)) {
+  daily.set(account.session_date, Number(account.session_pnl));
+ }
+
+ const days = [...daily.entries()].sort(([a], [b]) => a.localeCompare(b));
+ let cumulative = 0;
+ const points = [{ label: "Start", value: 0 }];
+ for (const [label, value] of days) {
+  cumulative += value;
+  points.push({ label, value: cumulative });
+ }
+
+ const values = points.map((point) => point.value);
+ const lo = Math.min(0, ...values);
+ const hi = Math.max(0, ...values);
+ const span = Math.max(hi - lo, 1);
+ const x = (index: number) => 8 + (index / Math.max(points.length - 1, 1)) * 84;
+ const y = (value: number) => 88 - ((value - lo) / span) * 72;
+ const path = points.map((point, index) => `${x(index)},${y(point.value)}`).join(" ");
+ const zeroY = y(0);
+ const closed = (trades || []).filter((trade: Data) => Number.isFinite(trade.pnl));
+ const wins = closed.filter((trade: Data) => trade.pnl > 0).length;
+ const losses = closed.filter((trade: Data) => trade.pnl < 0).length;
+ const tone = (value: number | null | undefined) =>
+  value == null || !Number.isFinite(value) ? "" : value > 0 ? "positive" : value < 0 ? "negative" : "";
+ const sessionValue = account.liquidation_complete && Number.isFinite(account.liquidation_pnl) ?
+  account.liquidation_pnl : account.session_pnl;
+
+ return (
+  <section className="panel spaced paper-pnl-panel">
+   <Head
+    title="Paper Trading P&L"
+    kicker="OBSERVED PAPER ACCOUNT / NET OF RECORDED CHARGES"
+    right={<span className="paper-pnl-date">Through {account.session_date || "current session"}</span>}
+   />
+   <div className="paper-pnl-layout">
+    <div className="paper-pnl-chart">
+     <div className="paper-pnl-chart-head">
+      <div>
+       <span>Cumulative net P&amp;L</span>
+       <strong className={tone(cumulative)}>{money(cumulative)}</strong>
+      </div>
+      <div>
+       <span>Account equity</span>
+       <strong>{money(account.equity)}</strong>
+      </div>
+     </div>
+     <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="Paper trading cumulative net profit and loss">
+      <defs>
+       <linearGradient id="paperPnlFill" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stopColor={cumulative >= 0 ? "#32d583" : "#ff7d8b"} stopOpacity="0.32" />
+        <stop offset="100%" stopColor={cumulative >= 0 ? "#32d583" : "#ff7d8b"} stopOpacity="0" />
+       </linearGradient>
+      </defs>
+      {[16, 40, 64, 88].map((line) => <line key={line} x1="8" x2="92" y1={line} y2={line} className="paper-pnl-gridline" />)}
+      <line x1="8" x2="92" y1={zeroY} y2={zeroY} className="paper-pnl-zero" />
+      <polygon points={`${path} 92,${zeroY} 8,${zeroY}`} fill="url(#paperPnlFill)" />
+      <polyline points={path} fill="none" stroke={cumulative >= 0 ? "#32d583" : "#ff7d8b"} strokeWidth="2" vectorEffect="non-scaling-stroke" />
+      {points.map((point, index) => <circle key={`${point.label}-${index}`} cx={x(index)} cy={y(point.value)} r="1.25" className={point.value >= 0 ? "paper-pnl-point gain" : "paper-pnl-point loss"} />)}
+     </svg>
+     <div className="paper-pnl-axis">
+      <span>{points[0].label}</span>
+      <span>{points[points.length - 1]?.label || "Current"}</span>
+     </div>
+     <p>
+      {days.length ? `${days.length} recorded paper session${days.length === 1 ? "" : "s"}.` : "No completed paper sessions recorded yet."}
+      {" "}The final point includes the current marked session and is not a guaranteed exit value.
+     </p>
+    </div>
+    <div className="paper-pnl-numbers">
+     {[
+      ["Available cash", money(account.cash), ""],
+      ["Current session net", money(sessionValue), tone(sessionValue)],
+      ["Realized net P&L", money(account.realized_pnl), tone(account.realized_pnl)],
+      ["Unrealized P&L", money(account.unrealized_pnl), tone(account.unrealized_pnl)],
+      ["Recorded charges", money(account.charges), ""],
+      ["Open risk", money(account.open_risk_rupees), account.open_risk_rupees > 0 ? "negative" : ""],
+     ].map(([label, value, className]) => (
+      <div className="paper-pnl-stat" key={label}>
+       <span>{label}</span>
+       <strong className={className}>{value}</strong>
+      </div>
+     ))}
+     <div className="paper-pnl-trades">
+      <div><strong>{closed.length}</strong><span>Closed fills</span></div>
+      <div><strong className="positive">{wins}</strong><span>Profitable</span></div>
+      <div><strong className="negative">{losses}</strong><span>Losing</span></div>
+     </div>
+    </div>
+   </div>
   </section>
  );
 }

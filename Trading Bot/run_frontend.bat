@@ -1,4 +1,4 @@
 @echo off
-cd frontend
-npm install
-npm run dev
+cd /d "%~dp0frontend"
+call npm install
+call npm run dev

@@ -29,8 +29,8 @@ class Settings(BaseSettings):
     # to the superseded limits when a worker/test loads settings without an env
     # file or after a clean checkout.
     max_trade_risk_rupees: float = Field(default=600,gt=0,allow_inf_nan=False)
-    daily_loss_limit_rupees: float = Field(default=800,gt=0,allow_inf_nan=False)
-    hard_daily_halt_rupees: float = Field(default=800,gt=0,allow_inf_nan=False)
+    daily_loss_limit_rupees: float = Field(default=1200,gt=0,allow_inf_nan=False)
+    hard_daily_halt_rupees: float = Field(default=1200,gt=0,allow_inf_nan=False)
     max_open_positions: int = Field(default=1,ge=1,le=2)
     min_ev_rupees: float = 0
     paper_capital: float = Field(default=30000,gt=0,allow_inf_nan=False)
@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     learning_min_validation_trades: int = 30
     learning_min_validation_days: int = 10
     strategy_version: str = "orb-retest-v1"
-    planned_daily_loss_rupees: float = Field(default=600,gt=0,allow_inf_nan=False)
+    planned_daily_loss_rupees: float = Field(default=1000,gt=0,allow_inf_nan=False)
     emergency_execution_reserve_rupees: float = Field(default=200,ge=0,allow_inf_nan=False)
     max_premium_commitment_rupees: float = Field(default=24000,gt=0,allow_inf_nan=False)
     cash_reserve_rupees: float = Field(default=6000,ge=0,allow_inf_nan=False)
@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     llm_enabled: bool = Field(default=False)
     llm_timeout_seconds: int = Field(default=30, ge=5, le=120)
     llm_max_retries: int = Field(default=2, ge=0, le=5)
+
+    # Optional paper-account notifications. Telegram is never an execution
+    # dependency and has no order authority.
+    telegram_enabled: bool = False
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    telegram_timeout_seconds: int = Field(default=10, ge=2, le=30)
 
     model_config = SettingsConfigDict(env_file=(str(PROJECT_ENV), ".env"), extra="ignore")
 

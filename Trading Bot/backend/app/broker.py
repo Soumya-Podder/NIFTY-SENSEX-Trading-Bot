@@ -6,11 +6,12 @@ from datetime import datetime,timezone,timedelta
 from .session import now_ist, local_time, quote_is_fresh, session_state
 
 class PaperBroker:
-    def __init__(self,store=None,capital=30000,cost=None,max_quote_age=2,clock=now_ist,entry_cutoff="14:30",policy=None):
+    def __init__(self,store=None,capital=30000,cost=None,max_quote_age=2,clock=now_ist,entry_cutoff="14:30",policy=None,notifier=None):
         self.store=store; self.cost=cost; self.max_quote_age=max_quote_age
         self.clock=clock
         self.entry_cutoff=entry_cutoff
         self.policy=policy
+        self.notifier=notifier
         self.lock=threading.RLock()
         self.persistence_error=None
         self._committed_state=None
@@ -30,6 +31,11 @@ class PaperBroker:
                 "last_exit":max((t["exit_ts"] for t in episodes),default=None),"lock_reason":None}
         self.state.setdefault("daily_results",{})
         self._persist()
+
+    def _notify(self,message):
+        if self.notifier:
+            try: self.notifier.notify(message)
+            except Exception: pass
 
     def _persist(self,*records):
         try:
@@ -125,7 +131,8 @@ class PaperBroker:
                 elif week_pnl<=-self.policy.weekly_loss: reason="WEEKLY_LOSS_PAUSE"
                 elif self.policy.target_reached(snap["gross_session_pnl"], snap["liquidation_pnl"]):
                     reason="NET_PROFIT_LOCK" if self.policy.target_basis == "net" else "GROSS_PROFIT_LOCK"
-                if reason and not ledger.get("lock_reason"): ledger["lock_reason"]=reason; self.state.update(halted=True,halt_reason=reason)
+                if reason and not ledger.get("lock_reason"):
+                    ledger["lock_reason"]=reason; self.state.update(halted=True,halt_reason=reason)
             self._persist()
 
     def place_order(self,*,contract,quote,quantity,signal,now=None):
@@ -155,11 +162,13 @@ class PaperBroker:
             if session_state(self.clock(),cutoff=self.entry_cutoff)!="ENTRY_WINDOW": raise ValueError("Entry cutoff passed while estimating charges")
             debit=price*quantity+fee["total"]
             if debit>self.state["cash"]: raise ValueError("Insufficient paper cash including charges")
+            stop=signal.get("stop_price"); target=signal.get("target_price")
+            if not isinstance(stop,(float,int)) or not math.isfinite(stop) or not 0<stop<price:
+                raise ValueError("A predeclared market-derived premium stop is required; percentage fallback is disabled")
+            if not isinstance(target,(float,int)) or not math.isfinite(target) or target<=price:
+                raise ValueError("A predeclared premium target is required")
             if self.policy:
-                stop=signal.get("stop_price"); target=signal.get("target_price")
-                if not isinstance(stop,(float,int)) or not math.isfinite(stop) or not 0<stop<price:
-                    raise ValueError("Plan requires a predeclared structural premium stop; percentage fallback is not allowed")
-                if not isinstance(target,(float,int)) or not math.isfinite(target) or target-price<2*(price-stop):
+                if target-price<2*(price-stop):
                     raise ValueError("Plan requires a predeclared target with at least 2:1 nominal reward/risk")
                 round_trip=self.cost.quote(contract,price,stop,quantity)["total"]
                 planned_risk=(price-stop+max(0,price-float(quote["bid"])))*quantity+round_trip
@@ -175,8 +184,7 @@ class PaperBroker:
                "entry_quote_observation_id":quote.get("observation_id"),
                "entry":price,"entry_ts":now.isoformat(),"entry_charges":fee,
                "entry_charges_remaining":fee["total"],"mark":float(quote["bid"]),"stale":False,
-               "stop":signal["stop_price"] if self.policy else price*(1-signal["stop_percent"]),
-               "target":signal["target_price"] if self.policy else price*(1+signal["target_percent"]),
+               "stop":float(stop),"target":float(target),
                "risk_rupees":signal["risk_rupees"],"setup":signal["setup"],"regime":signal["regime"],
                "agent_contexts":signal["agent_contexts"],"policy_versions":signal.get("policy_versions",{}),
                "signal_id":signal["id"],"quality":"verified","source":"paper_live_quotes","mae":0,"mfe":0}
@@ -201,6 +209,8 @@ class PaperBroker:
             self.state["positions"].append(p); self.state["consumed_signals"].append(signal["id"])
             if self.policy: self.state["loss_ledger"]["entries"]+=1
             self._persist(("orders",identifier,order))
+            current_pnl=self.snapshot()["session_pnl"]
+            self._notify(f"PAPER ENTRY CONFIRMED · {p['symbol']} {p.get('option_type','')}\n{p.get('strike','')} · Qty {quantity}\nEntry: ₹{price:,.2f}\nCurrent session P&L: ₹{current_pnl:,.2f}\nEstimated charges: ₹{fee['total']:,.2f}\nRisk: ₹{p['risk_rupees']:,.2f}")
             return order
 
     def close(self,position_id,quote,reason,now=None):
@@ -248,6 +258,8 @@ class PaperBroker:
                     ledger["losses"]+=int(episode["pnl"]<0); ledger["last_exit"]=now.isoformat()
             if self.policy: self.state["loss_ledger"]["gross_realized"]+=gross
             self._persist(*records)
+            current_pnl=self.snapshot()["session_pnl"]
+            self._notify(f"PAPER EXIT CONFIRMED · {p['symbol']} {p.get('option_type','')}\nQty {qty} · Exit: ₹{price:,.2f}\nReason: {reason}\nTrade net P&L: ₹{net:,.2f}\nCurrent session P&L: ₹{current_pnl:,.2f}\nCharges: ₹{trade['costs']:,.2f}")
             if self.policy and not remaining:
                 try: self.mark({},now)
                 except Exception:

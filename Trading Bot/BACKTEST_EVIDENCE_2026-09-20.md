@@ -1,4 +1,4 @@
-# Exact-contract backtest evidence — 20 September 2026
+# Exact-contract backtest evidence — 21 September 2026
 
 ## Decision
 
@@ -8,7 +8,7 @@ This result is a two-session paper simulation. It does not establish a profitabl
 
 ## Reproducible report
 
-- Report ID: `observed-2026-09-17-to-2026-09-18-portfolio-ca29e67f22`
+- Report ID: `observed-2026-09-17-to-2026-09-18-portfolio-71b968752c`
 - Report file: `data/backtest_inputs/2026-09-17_to_2026-09-18/portfolio_report.json`
 - Suite summary: `data/backtest_inputs/2026-09-17_to_2026-09-18/suite.json`
 - Input manifest: `data/backtest_inputs/2026-09-17_to_2026-09-18/manifest.json`
@@ -85,7 +85,7 @@ The runner writes these failures to `coverage_blockers.json` and refuses to publ
 ## Verification
 
 - Backend full suite: 240 tests passed after the final determinism changes.
-- Evidence, learning and backtest focused suite: 59 tests passed.
+- Evidence, learning and backtest cases are included in the 240-test full suite.
 - Python bytecode compilation: passed.
 - Frontend TypeScript and Vite production build: passed.
 - Economic invariant audit: every trade reconciles `net = gross - charges`; every admitted gate has zero failures; configured risk and time boundaries match the report.

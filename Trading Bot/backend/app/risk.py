@@ -9,7 +9,7 @@ from .session import local_time
 class PlanRiskPolicy:
     """Plan v1 risk envelope. Values are frozen configuration, not learned parameters."""
     trade_risk: float=600
-    loss_allocation: float=600
+    loss_allocation: float=1000
     emergency_reserve: float=200
     premium_limit: float=24000
     cash_reserve: float=6000
@@ -58,7 +58,7 @@ def available_risk(max_trade_risk,daily_loss_limit,session_pnl,open_risk,correla
     return max(0,min(max_trade_risk,daily_loss_limit+min(session_pnl,0)-open_risk,correlated_limit-correlated_risk))
 
 class RiskEngine:
-    def __init__(self,max_trade_risk=600,daily_loss_limit=800,hard_halt=800,max_positions=1):
+    def __init__(self,max_trade_risk=600,daily_loss_limit=1200,hard_halt=1200,max_positions=1):
         self.max_trade_risk=max_trade_risk; self.daily_loss_limit=daily_loss_limit
         self.hard_halt=hard_halt; self.max_positions=max_positions
     def approve(self,entry,stop_pct,lot,realized_pnl,open_positions, *, cash=math.inf,
