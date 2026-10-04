@@ -15,17 +15,20 @@ from ..adaptive_exit import update_exit, VERSION as ADAPTIVE_EXIT_VERSION
 from ..provenance import has_synthetic_options
 from .strategy_signals import historical_signals
 from ..strategy_portfolio import PORTFOLIO_VERSION, STRATEGIES, rank_opportunities
+from ..option_screen import VERSION as SCREEN_VERSION, assess as assess_option
+from ..outcome_evidence import label_outcomes
 
 
 @dataclass
 class BacktestConfig:
     initial_capital: float=30000
     risk_per_trade: float=600
-    daily_loss_limit: float=800
+    daily_loss_limit: float=1200
     correlated_risk_limit: float=600
     max_positions: int=1
     cooldown_bars: int=3
-    monthly_target: float=20000
+    monthly_target: float=15000
+    monthly_target_basis: str="net"
     entry_cutoff: str="14:30"
     exit_at: str="15:05"
     trade_from: str=""
@@ -38,6 +41,9 @@ class BacktestConfig:
     min_stop: float=0.
     invalidation_buffer: float=0.
     strategy_mode: str | None=None
+    option_screen: str="legacy"
+    max_spread_pct: float=.02
+    min_net_reward_risk: float=1.
 
 
 class BacktestEngine:
@@ -47,6 +53,10 @@ class BacktestEngine:
     def run(self,df,cancel=None,progress=None):
         cfg=self.cfg
         policy=cfg.plan_policy
+        if cfg.option_screen not in {"legacy",SCREEN_VERSION}:
+            raise ValueError("Unknown option screen")
+        if not math.isfinite(cfg.min_net_reward_risk) or cfg.min_net_reward_risk<1:
+            raise ValueError("Minimum net reward/risk must be finite and at least one")
         if cfg.strategy_mode and policy is None:
             raise ValueError("Portfolio strategy replay requires an explicit shared risk policy")
         pipeline=DecisionPipeline(cfg.learning_policies)
@@ -56,6 +66,7 @@ class BacktestEngine:
         day=None; baseline=cash; halted=False; cooldown={}; last_quotes={}; closed_count=0
         openings={}; records=x.to_dict("records") if not x.empty else []
         plan_candidates={}; option_history={}; consumed=set(); opportunities=[]
+        screen_counts={"PASS":0,"REJECTED":0,"WAITING_DATA":0}
         portfolio_signals=historical_signals(df,cfg.strategy_mode,cancel or (lambda:False)) if cfg.strategy_mode else {}
         if policy and not cfg.strategy_mode:
             for (session,symbol),frame in x.groupby(["session","symbol"]):
@@ -122,8 +133,9 @@ class BacktestEngine:
                 day=date; baseline=cash; halted=False; closed_count=0; pending={}
                 if policy:
                     current_week=stamp.isocalendar()[:2]
-                    if current_week!=week: weekly_pnl=0.; week=current_week
-                    sticky="DRAWDOWN" if ledger["lock_reason"]=="DRAWDOWN" else ("WEEKLY_LOSS" if ledger["lock_reason"]=="WEEKLY_LOSS" and current_week==week else None)
+                    new_week=current_week!=week
+                    if new_week: weekly_pnl=0.; week=current_week
+                    sticky="DRAWDOWN" if ledger["lock_reason"]=="DRAWDOWN" else ("WEEKLY_LOSS" if ledger["lock_reason"]=="WEEKLY_LOSS" and not new_week else None)
                     ledger={"loss_spend":0.,"losses":0,"entries":0,"last_exit":None,"lock_reason":sticky}
                     gross_realized=0.; halted=bool(sticky)
             quotes={q["contract_id"]:q for r in rows for q in (r.get("option_quotes") or []) if q.get("contract_id")}
@@ -140,6 +152,12 @@ class BacktestEngine:
                 if any(str(q.get(k))!=str(selected.get(k)) for k in ("symbol","strike","expiry","lot_size","tick_size","option_type")):
                     errors.append(f"{stamp}: selected contract identity changed before entry"); continue
                 if (stamp-pd.Timestamp(signal["timestamp"])).total_seconds()!=60: continue
+                if cfg.option_screen==SCREEN_VERSION:
+                    screen=assess_option(q,signal,stamp,max_spread=cfg.max_spread_pct)
+                    screen_counts[screen["status"]]+=1
+                    if screen["status"]!="PASS":
+                        opportunities.append({"signal_id":signal["id"],"timestamp":stamp,"status":screen["status"],"option_screen":screen})
+                        continue
                 price=float(q["open"])+float(q["tick_size"]); lot=int(q["lot_size"])
                 if policy:
                     if str(q["expiry"])[:10]<=date: continue
@@ -165,6 +183,9 @@ class BacktestEngine:
                     except ValueError as exc:
                         errors.append(str(exc)); break
                     risk=(price-exit_price)*qty+buy["total"]+sell["total"]
+                    if cfg.strategy_mode:
+                        reward=(signal["target_price"]-price)*qty-buy["total"]-CostModel.historical(q,signal["target_price"],qty,"sell",stamp)["total"]
+                        if risk<=0 or reward/risk<cfg.min_net_reward_risk: continue
                     debit=price*qty+buy["total"]
                     if risk<=budget and debit<=cash and (not policy or (debit<=policy.premium_limit and cash-debit>=policy.cash_reserve)):
                         filled=(qty,buy,risk); break
@@ -185,7 +206,10 @@ class BacktestEngine:
                     "risk_rupees":risk,"mark":price,"setup":signal["setup"],"regime":signal["regime"],
                     "agent_contexts":contexts,"policy_versions":signal["policy_versions"],"mae":0,"mfe":0}
                 positions[q["contract_id"]].update(entry_features=entry_features,
-                    strategy_version=signal.get("strategy_version"),option_atr=signal.get("option_atr"))
+                    strategy_version=signal.get("strategy_version"),option_atr=signal.get("option_atr"),
+                    initial_stop=price*(1-signal["stop_percent"]),market_structure=signal.get("market_structure"))
+                if cfg.option_screen==SCREEN_VERSION:
+                    positions[q["contract_id"]]["option_screen_version"]=SCREEN_VERSION
                 positions[q["contract_id"]].update({k:signal.get(k) for k in ("strategy_id","strategy_name","portfolio_version","underlying_target")})
                 if policy:
                     positions[q["contract_id"]].update(stop=signal["stop_price"],target=signal["target_price"],
@@ -277,7 +301,14 @@ class BacktestEngine:
                         veto=policy.entry_veto(ledger,stamp+timedelta(minutes=1))
                         opportunities.append({**signal,"status":"REJECTED" if veto else "CANDIDATE","reason":veto})
                         if veto: continue
-                    selected=pipeline.option_candidates(signal,row.get("option_quotes") or [],cash,stamp,historical=True)
+                    selected=pipeline.option_candidates(signal,row.get("option_quotes") or [],cash,stamp,historical=True,
+                        max_spread=cfg.max_spread_pct,buyer_screen=cfg.option_screen==SCREEN_VERSION)
+                    if cfg.option_screen==SCREEN_VERSION:
+                        signal["option_screen_version"]=SCREEN_VERSION
+                        for screen in pipeline.last_option_screens:
+                            screen_counts[screen["status"]]+=1
+                        if not selected:
+                            opportunities.append({"signal_id":signal["id"],"timestamp":stamp,"status":"SCREEN_BLOCKED", "option_screens":pipeline.last_option_screens})
                     for candidate in (selected[:3] if cfg.strategy_mode else selected):
                         lot=candidate["lot_size"]; price=candidate["close"]+candidate["tick_size"]
                         try:
@@ -305,7 +336,7 @@ class BacktestEngine:
                                     continue
                                 target=signal["target_price"]
                                 reward=(target-price)*lot-buy["total"]-CostModel.historical(candidate,target,lot,"sell",stamp)["total"]
-                                if reward/risk<1: continue
+                                if reward/risk<cfg.min_net_reward_risk: continue
                                 offers.append({"signal":dict(signal),"selected":candidate,
                                                "contract":{**candidate,"spread_pct":candidate.get("spread_pct",float("inf"))},
                                                "risk":risk,"net_reward_risk":reward/risk,"ev":{"status":"OBSERVATION"}})
@@ -325,6 +356,7 @@ class BacktestEngine:
         if day is not None:
             daily.append({"date":day,"pnl":cash+sum(p["mark"]*p["qty"] for p in positions.values())-baseline,"trades":closed_count})
         result=self._result(trades,curve,daily,list(positions.values()),errors,pipeline)
+        label_outcomes(df,result["trades"])
         if policy:
             result.update(opportunities=opportunities,loss_ledger=ledger,
                           strategy_version=PORTFOLIO_VERSION if cfg.strategy_mode=="portfolio" else next((s["version"] for s in STRATEGIES if s["id"]==cfg.strategy_mode),"orb-retest-v1"),risk_policy=policy.describe(),
@@ -349,17 +381,35 @@ class BacktestEngine:
                 result.update(quality="research_net", status="research_complete")
             for trade in result["trades"]:
                 trade.update(quality="research_net", learning_eligible=False)
+        result["option_screen_validation"]={"requested":cfg.option_screen,"runtime_version":SCREEN_VERSION,
+            "runtime_screen_validated":False,"counts":screen_counts,"min_net_reward_risk":cfg.min_net_reward_risk,
+            "specialist_review_validated":False,
+            "reason":"Candle replay cannot establish two-second execution or full specialist-review parity; legacy runs do not test the current buying screen"}
+        if cfg.option_screen==SCREEN_VERSION:
+            result.update(learning_eligible=False,quality="research_net",
+                          status="research_partial" if screen_counts["WAITING_DATA"] or result["issues"] else "research_complete")
+            result["issues"].append("Current option screen requires timestamped Greeks and executable depth; minute replay is research only")
+            if screen_counts["WAITING_DATA"]:
+                result["metrics"]["partial_realized_pnl"]=result["metrics"].get("total_pnl")
+                for key in ("total_pnl","average_monthly_pnl","target_month_rate","profit_factor","expectancy","win_rate"):
+                    result["metrics"][key]=None
+                result["metrics"].update(monthly_pnl={},realized_payoff_ratio=None,breakeven_win_rate=None)
+            for trade in result["trades"]: trade.update(quality="research_net",learning_eligible=False)
         return result
 
     def _result(self,trades,curve,daily,unresolved,errors,pipeline):
         values=[self.cfg.initial_capital,*[p["value"] for p in curve]]
-        summary=metrics(trades,pd.Series(values),daily,self.cfg.monthly_target)
+        summary=metrics(trades,pd.Series(values),daily,self.cfg.monthly_target,self.cfg.monthly_target_basis)
         valid=not errors and not unresolved
         if not valid:
             summary["partial_realized_pnl"]=summary["total_pnl"]
             for key in ("total_pnl","average_monthly_pnl","target_month_rate","profit_factor","expectancy","win_rate"):
                 summary[key]=None
             summary["profit_factor_status"]="DATA_BLOCKED"
+            summary.update(monthly_pnl={},realized_payoff_ratio=None,breakeven_win_rate=None)
         return {"trades":trades,"equity":pd.Series(values),"curve":curve,"daily":daily,"metrics":summary,
                 "unresolved":unresolved,"quality":"verified" if valid else "incomplete",
+                "option_screen_validation":{"requested":self.cfg.option_screen,"runtime_version":SCREEN_VERSION,
+                    "runtime_screen_validated":False,"specialist_review_validated":False,
+                    "reason":"Historical candle simulation; current execution and full specialist review remain unvalidated"},
                 "issues":list(dict.fromkeys(errors))[:50],"agent_counts":pipeline.counts}

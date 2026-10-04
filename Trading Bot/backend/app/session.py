@@ -16,6 +16,7 @@ def local_time(value):
 
 def session_state(now=None, *, start="09:15", cutoff="14:30", exit_at="15:05"):
     now=local_time(now or now_ist())
+    if not calendar_info(now.date())["year_supported"]: return "CALENDAR_UNSUPPORTED"
     if now.weekday()>=5: return "WEEKEND"
     if calendar_info(now.date())["closed"]: return "HOLIDAY"
     clock=now.time().replace(tzinfo=None)

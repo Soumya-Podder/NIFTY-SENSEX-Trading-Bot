@@ -4,6 +4,7 @@ import math
 from ..indicators import add_features
 from ..strategy_portfolio import evaluate_completed_bars, STRATEGIES
 from ..setups import opening_range_retest
+from ..market_structure import analyze_structure, structure_evidence
 
 MODES={s['id'] for s in STRATEGIES}|{'portfolio'}
 
@@ -37,5 +38,9 @@ def historical_signals(frame, mode, cancel=lambda:False):
                 stamp=row.timestamp
                 signals,_=evaluate_completed_bars(bars.iloc[:index+1],stamp+pd.Timedelta(minutes=1),symbol,
                                                  orb_candidate=orbs.get(stamp.isoformat()))
+                if signals:
+                    structure=analyze_structure(warm,stamp+pd.Timedelta(minutes=1),symbol)
+                    for signal in signals:
+                        signal["market_structure"]=structure_evidence(structure,signal["option_type"])
                 result[(stamp.isoformat(),symbol)]=[s for s in signals if mode=='portfolio' or s['strategy_id']==mode]
     return result

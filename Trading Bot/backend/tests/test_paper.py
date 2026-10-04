@@ -63,10 +63,10 @@ def test_plan_loss_spend_does_not_refill_after_winner_or_restart(tmp_path):
     assert restored.snapshot()["loss_ledger"]["entries"]==2
 
 
-def test_plan_serializes_indices_and_enforces_one_lot_cooldown_and_expiry(tmp_path):
+def test_plan_serializes_indices_and_enforces_risk_cooldown_and_expiry(tmp_path):
     broker,_,clock=plan_account(tmp_path)
-    with pytest.raises(ValueError,match="one lot"): enter(broker,clock,qty=20)
-    first=enter(broker,clock,qty=10)
+    with pytest.raises(ValueError,match="risk"): enter(broker,clock,qty=60)
+    first=enter(broker,clock,qty=20)
     with pytest.raises(ValueError,match="one position"): enter(broker,clock,c=contract("SENSEX"),qty=10,identifier="second")
     clock["now"]+=timedelta(seconds=1)
     broker.close(first["id"],quote(contract(),clock,bid=100),"EXIT",clock["now"])

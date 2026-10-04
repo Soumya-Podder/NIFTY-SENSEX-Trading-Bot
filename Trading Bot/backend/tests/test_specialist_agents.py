@@ -1,11 +1,12 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from app.specialist_agents import assess_specialists
 
 
 def base_signal():
-    return {"regime": "TREND_UP", "option_type": "CALL", "underlying_entry": 100,
-            "feature_row": {"adx": 30, "ema_slope_atr": .4, "atr": 1, "vwap_distance_atr": .2}}
+    return {"regime": "TREND_UP", "strategy_id":"trend_pullback", "option_type": "CALL", "underlying_entry": 100,"invalidation":98,
+            "feature_row": {"timestamp":(datetime.now(timezone.utc)-timedelta(minutes=1)).isoformat(),
+                            "close":100,"ema9":99.8,"ema21":99.5,"adx": 30, "ema_slope_atr": .4, "atr": 1}}
 
 
 def base_contract():

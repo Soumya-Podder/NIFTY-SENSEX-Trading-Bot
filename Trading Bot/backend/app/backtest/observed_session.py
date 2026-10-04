@@ -20,12 +20,13 @@ import zlib
 import pandas as pd
 
 from ..ai import LearningService
-from ..config import current_credentials
+from ..config import current_credentials, Settings
 from ..expectancy import CostModel
-from ..risk import PlanRiskPolicy
+from .configuration import build_replay_config
+from ..option_screen import VERSION as SCREEN_VERSION
 from ..store import json_safe, Store
 from .data import _valid_bar, read_contract_csv
-from .engine import BacktestConfig, BacktestEngine
+from .engine import BacktestEngine
 from .reports import report_from_run
 
 PROJECT = Path(__file__).resolve().parents[3]
@@ -221,9 +222,11 @@ def verified_replay(frame, cfg, root, mode, calculator):
                  trade.get("entry_charges",{}).get("kind")!="broker_calculator_receipt" or
                  trade.get("exit_charges",{}).get("kind")!="broker_calculator_receipt"]
         if not missing:
-            result.update(learning_eligible=True,
-                          fee_evidence="Completed trades use saved Dhan calculator receipts")
-            for trade in result.get("trades",[]): trade["learning_eligible"]=True
+            eligible=(result.get("learning_eligible") is not False and result.get("quality")=="verified"
+                      and not result.get("issues") and not result.get("unresolved"))
+            result.update(learning_eligible=eligible,
+                          fee_evidence="Completed trades use saved Dhan calculator receipts" if result.get("trades") else "No completed trades to certify")
+            for trade in result.get("trades",[]): trade["learning_eligible"]=eligible and trade.get("learning_eligible") is not False
             save(root/(mode+"_charge_receipts.json"),receipts)
             return result,receipts
         updates={}
@@ -330,14 +333,12 @@ def prepare_days(days, root):
     return combined,manifest
 
 
-def run_suite(days, root, publish=False):
+def run_suite(days, root, publish=False, option_screen=SCREEN_VERSION):
     frame, manifest = prepare_days(days,root)
     start,end=days[0],days[-1]
-    policy = PlanRiskPolicy(trade_risk=600, loss_allocation=600, emergency_reserve=200)
-    cfg = BacktestConfig(initial_capital=30000, risk_per_trade=600,
-        daily_loss_limit=800,
-        correlated_risk_limit=600, max_positions=1, plan_policy=policy, adaptive_exits=True,
-        entry_cutoff="14:30", exit_at="15:05", trade_from=start)
+    settings=Settings()
+    cfg,base_config=build_replay_config(settings,{"source":"observed_session","from":start,"to":end,
+        "strategy_mode":"portfolio","option_screen":option_screen})
     summaries = []; store=Store(PROJECT/"backend"/"trading_bot.db"); calculator=CostModel(store)
     for mode in MODES:
         print("Replaying " + mode, flush=True)
@@ -347,21 +348,22 @@ def run_suite(days, root, publish=False):
                       assumptions=manifest["limitations"] + [
                           "Candidate sizing reserves conservative scenario charges.",
                           "Completed trade costs are Dhan calculator observations retrieved within its stated 15-day pricing-notice interval; they are not actual contract notes."])
-        config = {"source": "observed_session", "dataset": manifest["dataset"], "dataset_id": manifest["sha256"],
-            "from": start, "to": end, "sessions":days, "capital": 30000, "risk_per_trade": 600,
-            "daily_loss_limit": 800, "correlated_risk_limit": 600, "strategy_mode": mode,
-            "entry_cutoff": "14:30", "session_exit": "15:05"}
-        config["dataset_id"]=hashlib.sha256((config["dataset_id"]+receipt_digest).encode()).hexdigest()
+        config = {**base_config,"dataset": manifest["dataset"], "dataset_id": manifest["sha256"],
+            "sessions":days,"strategy_mode":mode,
+            "replay_policy":{**base_config["replay_policy"],"strategy_mode":mode}}
+        policy_digest=json.dumps(config["replay_policy"],sort_keys=True)
+        config["dataset_id"]=hashlib.sha256((config["dataset_id"]+receipt_digest+policy_digest).encode()).hexdigest()
         report = report_from_run(result, config)
         identifier = "observed-" + start + "-to-" + end + "-" + mode + "-" + config["dataset_id"][:10]
         report.update(run_id=identifier, created_at=datetime.now(timezone.utc).isoformat())
         report["ml_learning"]=LearningService(store).train(report,identifier)
         save(root / (mode + "_report.json"), report)
         if publish:
+            from ..outcome_evidence import evidence_records
             store.save_bundle([("reports", identifier, report), ("jobs", identifier,
                 {"id": identifier, "report_id": identifier, "status": report["status"], "progress": 100,
                  "message": "Observed exact-contract replay; Dhan cost receipts; learning gates audited", "config": config,
-                 "created_at": report["created_at"], "updated_at": report["created_at"]})])
+                 "created_at": report["created_at"], "updated_at": report["created_at"]}),*evidence_records(report)])
             if mode == "portfolio":
                 store.put_record("backtest", "latest", {"report_id": identifier})
         learning=report["ml_learning"]
@@ -385,6 +387,8 @@ def main():
     parser.add_argument("--to",dest="to_day")
     parser.add_argument("--download", action="store_true")
     parser.add_argument("--publish", action="store_true", help="Save reports to the dashboard; never modifies the paper account")
+    parser.add_argument("--option-screen",choices=(SCREEN_VERSION,"legacy"),default=SCREEN_VERSION,
+        help="Current buying screen by default; legacy is a historical comparison only")
     args = parser.parse_args()
     if args.from_day and not args.to_day: parser.error("--to is required with --from")
     if args.to_day and not args.from_day: parser.error("--to requires --from")
@@ -419,7 +423,7 @@ def main():
          (PROJECT/"data"/"backtest_inputs"/(days[0]+"_to_"+days[-1]))
     root.mkdir(parents=True,exist_ok=True)
     try:
-        run_suite(days,root,args.publish)
+        run_suite(days,root,args.publish,args.option_screen)
     except ValueError as exc:
         parser.error(str(exc))
 

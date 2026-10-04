@@ -162,15 +162,23 @@ class DecisionPipeline:
                 "required_execution_gates": ["verified_contract", "premium_stop_and_target",
                                              "fee_aware_risk", "validated_net_expectancy"]}
 
-    def option_candidates(self,signal,contracts,cash,now,max_spread=.03,historical=False):
+    def option_candidates(self,signal,contracts,cash,now,max_spread=.03,historical=False,buyer_screen=False):
+        from .option_screen import assess, VERSION
+        screens=[]
         ranked=[]
         for c in contracts:
-            if c.get("option_type")!=signal["option_type"] or c.get("is_atm",False): continue
+            if c.get("option_type")!=signal["option_type"]: continue
+            screen=None
+            if buyer_screen:
+                screen=assess(c,signal,now,max_spread=max_spread)
+                screens.append({"contract_id":c.get("contract_id"),**screen})
+                if screen["status"]!="PASS": continue
+            elif c.get("is_atm",False): continue
             if not c.get("identity_verified") or not c.get("expiry") or str(c["expiry"])[:10]<str(now)[:10]: continue
             if not all(finite(c.get(k)) and c[k]>0 for k in ("strike","lot_size")): continue
             price=c.get("close") if historical else c.get("ask")
             if not finite(price) or price<=0 or price*c["lot_size"]>=cash: continue
-            spread=None if historical else (c.get("ask",0)-c.get("bid",0))/price
+            spread=screen["spread_pct"] if screen else None if historical else (c.get("ask",0)-c.get("bid",0))/price
             if not historical and (not finite(c.get("bid")) or c["bid"]<=0 or spread<0 or spread>max_spread or c.get("ask_qty",0)<c["lot_size"] or c.get("bid_qty",0)<c["lot_size"]): continue
             if not finite(c.get("oi")) or c["oi"]<=0 or not finite(c.get("volume")) or c["volume"]<=0: continue
             delta=c.get("delta")
@@ -178,16 +186,17 @@ class DecisionPipeline:
             dte=(pd.Timestamp(c["expiry"])-pd.Timestamp(str(now)[:10])).days
             ctx=f"dte_{'0' if dte==0 else '1-3' if dte<=3 else '4+'}|delta_{'unknown' if not finite(delta) else 'low' if abs(delta)<.4 else 'medium' if abs(delta)<.6 else 'high'}"
             if not self.context_allowed("Option Selector",ctx): continue
-            rank=(spread if spread is not None else 0,abs(abs(delta)-.5) if finite(delta) else 1,-c["oi"])
+            rank=((0 if screen["delta_preference"]=="PREFERRED" else 1,0 if spread<=.01 else 1) if screen else ()) + (spread if spread is not None else 0,abs(abs(delta)-.5) if finite(delta) else 1,-c["oi"])
             greek_age=None
             if c.get("greeks_observed_at"):
                 try: greek_age=max(0.,(local_time(now)-local_time(c["greeks_observed_at"])).total_seconds())
                 except (TypeError,ValueError): greek_age=None
-            ranked.append((rank,{**c,"spread_pct":spread,"option_context":ctx,
+            ranked.append((rank,{**c,**({"option_screen":screen,"option_screen_version":VERSION} if screen else {}),"spread_pct":spread,"option_context":ctx,
                                  "greeks_age_seconds":greek_age}))
         nearest_expiry=min((c["expiry"] for _,c in ranked),default=None)
         result=[c for _,c in sorted(ranked,key=lambda v:v[0]) if c["expiry"]==nearest_expiry]
+        self.last_option_screens=screens
         self.stage("Option Selector",signal["symbol"],"PASS" if result else "REJECTED",
-                   "Liquid non-ATM candidates within cash budget" if result else "No verified, liquid contract fits the budget",
-                   result[0]["option_context"] if result else "unavailable",count=len(result))
+                   ("Observed option-buying screen passed" if buyer_screen else "Liquid non-ATM candidates within cash budget") if result else "No verified, liquid contract fits the budget",
+                   result[0]["option_context"] if result else "unavailable",count=len(result),option_screens=screens)
         return result

@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any
 
 from .learning_validation import MIN_DAYS, MIN_TEST, MIN_TRAIN, VERSION
+from .specialist_agents import ROLE_TASKS
 
 
 ARCHITECTURE_AGENT_SPECS = (
@@ -170,7 +171,9 @@ def audit_individual_agents(store, *, deployed: dict[str, Any] | None = None,
     days_all.discard(None)
     rows = []
     for spec in ARCHITECTURE_AGENT_SPECS:
-        aliases = tuple(spec["aliases"])
+        # Generic selector/confirmation events do not prove another specialist ran.
+        aliases = tuple(dict.fromkeys((spec["id"], *(alias for alias in spec["aliases"]
+                        if alias not in {"Option Selector", "Confirmation", "Setup"}))))
         event_rows = [row for row in events if _matches_agent(row, aliases)]
         outcome_rows = [row for row in episodes if _matches_agent(row, aliases)]
         if spec["id"] == "Loss Investigator":
@@ -210,7 +213,7 @@ def audit_individual_agents(store, *, deployed: dict[str, Any] | None = None,
         eligible = len(outcome_rows) >= MIN_TEST and len(decision_days) >= MIN_DAYS and all(
             row.get("learning_eligible") is not False and not row.get("estimated_exit") for row in outcome_rows)
         rows.append({"id": spec["id"], "kind": spec["kind"], "learnable": spec["learnable"],
-                     "required_evidence": spec["evidence"], "status": status,
+                     "required_evidence": ROLE_TASKS[spec["id"]], "status": status,
                      "self_improvement_proven": status == "SELF_IMPROVEMENT_PROVEN",
                      "decision_count": len(event_rows), "outcome_count": len(outcome_rows),
                      "learning_attempts": len(learning_rows), "candidate_models": len(model_rows),

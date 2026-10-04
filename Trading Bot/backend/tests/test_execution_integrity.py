@@ -115,6 +115,10 @@ def test_health_detects_stuck_execution_worker(tmp_path):
         status={'last_cycle':clock['now'].isoformat()}
     assert execution_health(Engine(),broker,clock['now'])['healthy']
     assert not execution_health(Engine(),broker,clock['now']+timedelta(seconds=16))['healthy']
+    Engine.status['last_cycle']=(clock['now']+timedelta(seconds=4)).isoformat()
+    assert execution_health(Engine(),broker,clock['now'])['heartbeat_age_seconds']==0
+    Engine.status['last_cycle']=(clock['now']+timedelta(seconds=20)).isoformat()
+    assert not execution_health(Engine(),broker,clock['now'])['healthy']
 
 
 def test_structural_stop_is_not_tightened_to_force_risk_budget():

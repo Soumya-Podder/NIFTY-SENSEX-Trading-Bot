@@ -1,7 +1,38 @@
 import json
 import sqlite3
 import time
+import threading
 from app.quote_recorder import QuoteRecorder
+
+
+def test_stop_waits_for_writer_completion():
+    recorder=QuoteRecorder('unused.db')
+    release=threading.Event()
+    recorder.thread=threading.Thread(target=release.wait)
+    recorder.thread.start()
+    stopped=threading.Event()
+    stopper=threading.Thread(target=lambda:(recorder.stop(),stopped.set()))
+    stopper.start()
+    try:
+        assert recorder.stop_event.wait(1)
+        assert not stopped.wait(.05)
+    finally:
+        release.set(); stopper.join(2); recorder.thread.join(2)
+    assert stopped.is_set()
+
+
+def test_archive_reads_preserve_legacy_and_previous_capture_ids(tmp_path):
+    archive=tmp_path/'archive'; archive.mkdir()
+    old_paths=[tmp_path/'legacy.db',archive/'previous.db']
+    identifiers=[]
+    for path in old_paths:
+        old=QuoteRecorder(path,min_free_bytes=0)
+        old.start(); identifiers.append(old.record('underlying',{'symbol':'NIFTY','ltp':22000}))
+        old.stop()
+    current=QuoteRecorder(archive/'current.db',archive_dir=archive,legacy_paths=(old_paths[0],),min_free_bytes=0)
+    current.start(); current.stop()
+    for identifier in identifiers:
+        assert current.read(identifier)['quote']['ltp']==22000
 
 
 def test_quote_round_trip_is_durable_and_does_not_record_credentials(tmp_path):
@@ -32,6 +63,26 @@ def test_quote_round_trip_is_durable_and_does_not_record_credentials(tmp_path):
         assert db.execute('SELECT count(*) FROM recorder_runs').fetchone()[0]==3
 
 
+def test_full_depth_and_sequence_are_durable_but_unknown_packet_fields_are_not(tmp_path):
+    path=tmp_path/'depth.db'
+    recorder=QuoteRecorder(path,min_free_bytes=0)
+    recorder.start()
+    identifier=recorder.record('option_depth',{
+        'contract_id':'fixed-contract','packet_type':'Full Data','sequence':42,
+        'exchange_segment':2,'raw_exchange_timestamp':1780000000,
+        'depth':[{'bid_price':99.5,'bid_quantity':50,'bid_orders':3,
+                  'ask_price':100.0,'ask_quantity':25,'ask_orders':2,
+                  'unknown_depth_value':'discard-me'} for _ in range(7)],
+        'access_token':'must-not-be-recorded','unknown_packet_field':'discard-me',
+    })
+    recorder.stop()
+    saved=recorder.read(identifier)['quote']
+    assert saved['sequence']==42 and saved['packet_type']=='Full Data'
+    assert len(saved['depth'])==5 and saved['depth'][0]['bid_orders']==3
+    assert 'unknown_depth_value' not in saved['depth'][0]
+    assert 'access_token' not in saved and 'unknown_packet_field' not in saved
+
+
 def test_queue_overflow_and_storage_limit_are_not_silent(tmp_path):
     recorder=QuoteRecorder(tmp_path/'bounded.db',capacity=1,max_bytes=1,min_free_bytes=0)
     recorder.accepting=True
@@ -52,3 +103,18 @@ def test_failed_writer_stops_accepting_observations(tmp_path,monkeypatch):
     assert recorder.status()['error']=='OperationalError'
     assert recorder.record('underlying',{'ltp':100}) is None
     assert not recorder.status()['worker_alive']
+
+
+def test_live_sized_burst_drains_without_queue_drops(tmp_path):
+    recorder=QuoteRecorder(tmp_path/'burst.db',capacity=25000,batch_size=2000,min_free_bytes=0)
+    recorder.start()
+    for value in range(20000):
+        assert recorder.record('option_depth',{'contract_id':f'test-{value % 48}','bid':100,'ask':101})
+    deadline=time.time()+10
+    while recorder.status()['queued'] and time.time()<deadline:
+        time.sleep(.02)
+    recorder.stop()
+    assert recorder.status()['queued']==0
+    assert recorder.status()['dropped_this_run']==0
+    assert recorder.status()['error'] is None
+    assert recorder.persisted==20000

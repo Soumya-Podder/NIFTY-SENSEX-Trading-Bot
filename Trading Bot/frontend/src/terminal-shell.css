@@ -1,0 +1,125 @@
+/* Terminal presentation. Trading decisions and feed cadence stay in the engine. */
+:root[data-theme] .app-shell { max-width: 1920px; padding: 0 24px 40px; }
+.app-shell { font-variant-numeric: tabular-nums; }
+:root[data-theme] .app-shell .topbar { min-height: 76px; height: auto; gap: 20px; padding: 16px 0; border-bottom: 1px solid var(--line); }
+.app-shell .brand-lockup { gap: 12px; }
+.app-shell .brand-mark { width: 40px; height: 40px; border-radius: 10px; background: var(--surface-raised); border: 1px solid var(--blue); box-shadow: none; }
+.brand-mark svg { width: 28px; height: 28px; fill: none; stroke: var(--blue); stroke-width: 2; stroke-linecap: round; }
+.app-shell .brand-lockup h1 { font-size: 18px; letter-spacing: .02em; margin-top: 4px; }
+.app-shell .eyebrow { font-size: 10px; letter-spacing: .14em; }
+.app-shell .topbar-right { gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.terminal-connection { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; color: var(--muted); }
+.terminal-connection i { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+.terminal-connection.disconnected i { background: var(--red); }
+:root[data-theme] .app-shell .market-pill, :root[data-theme] .app-shell .mode-pill { font-size: 10px; padding: 7px 10px; border-radius: 5px; letter-spacing: .04em; }
+.app-shell .market-pill.is-live::before { content: ''; display: inline-block; margin-right: 7px; width: 6px; height: 6px; border-radius: 50%; background: var(--green); animation: terminal-heartbeat 2s ease-in-out infinite; }
+.app-shell .theme-toggle { padding: 7px 10px; border-radius: 5px; font-size: 11px; }
+.app-shell .market-strip { display: block; padding: 14px 0; height: auto; min-height: 0; border: 0; }
+.app-shell .market-values { display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px !important; width: 100%; }
+.app-shell .market-quote { display: grid; width: 100%; grid-template-columns: 1fr auto auto; align-items: center; gap: 8px 18px; padding: 15px 18px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); min-width: 0; }
+.quote-symbol { font-size: 13px; font-weight: 700; letter-spacing: .04em; color: var(--text); }
+.app-shell .quote-symbol small { display: block; font-size: 9px; letter-spacing: .12em; margin-top: 5px; color: var(--muted); }
+.app-shell .market-price { font: 600 24px var(--font-mono, monospace); letter-spacing: -.04em; white-space: nowrap; }
+.app-shell .market-quote > :nth-child(3) { font: 9px var(--font-mono, monospace); letter-spacing: .04em; border: 1px solid var(--line); padding: 5px 7px; border-radius: 4px; }
+.app-shell .market-quote > small { grid-column: 1 / -1; font-size: 10px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 8px; margin: 0; }
+:root[data-theme] .app-shell .tabs { display: flex; align-items: center; gap: 5px; padding: 6px; min-height: 46px; height: auto; margin: 0 0 18px; border: 1px solid var(--line); border-radius: 7px; box-shadow: none; overflow-x: auto; }
+:root[data-theme] .app-shell .tabs button { flex: 0 0 auto; padding: 10px 16px; border: 1px solid transparent; border-radius: 5px; font-size: 12px; line-height: 1; margin: 0; background: transparent; color: var(--muted); }
+:root[data-theme] .app-shell .tabs button.active { color: var(--blue); background: var(--surface-hover); border-color: var(--line); }
+.app-shell .tabs button::after { display: none; }
+.terminal-view { min-width: 0; animation: terminal-enter 220ms ease-out both; }
+.terminal-value { display: inline-block; border-radius: 3px; transition: background-color 180ms ease, color 180ms ease; }
+:root[data-theme] .app-shell .terminal-value { font: inherit; letter-spacing: inherit; text-transform: none; color: inherit !important; }
+.app-shell .paper-pnl-chart-head strong .terminal-value { display: inline-block; }
+:root[data-theme] .app-shell .terminal-value.tick-up { color: var(--green) !important; background: color-mix(in srgb, var(--green) 16%, transparent); }
+:root[data-theme] .app-shell .terminal-value.tick-down { color: var(--red) !important; background: color-mix(in srgb, var(--red) 16%, transparent); }
+.app-shell button { transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease; }
+.app-shell button:not(:disabled):hover { border-color: var(--blue); }
+.app-shell button:active:not(:disabled) { transform: translateY(1px); }
+.app-shell :is(button, input, select, summary):focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+.app-shell :is(.panel, .paper-pnl-panel, .market-terminal, .modern-dark-workflow) { border-radius: 10px; }
+.app-shell .section-heading { margin: 18px 0 12px; }
+.app-shell .section-heading h2 { font-size: 18px; }
+.app-shell .section-heading .muted { font-size: 11px; }
+.app-shell .panel-head { padding: 16px 20px; }
+.app-shell .panel-title { font-size: 15px; }
+.app-shell .spaced { margin-top: 18px; }
+.app-shell .paper-pnl-chart-head strong { font-family: var(--font-mono, monospace); font-size: 27px; }
+.app-shell .paper-pnl-stat strong { font-family: var(--font-mono, monospace); font-size: 20px; }
+.app-shell .paper-pnl-numbers { gap: 12px; }
+:root[data-theme] .app-shell .paper-pnl-stat, :root[data-theme] .app-shell .paper-pnl-trades { border-color: var(--line); }
+:root[data-theme] .app-shell .paper-pnl-chart-head strong.positive { color: var(--green) !important; }
+:root[data-theme] .app-shell .paper-pnl-chart-head strong.negative { color: var(--red) !important; }
+.app-shell .compact-risk-strip { padding: 12px 16px; margin-top: 12px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
+.app-shell .market-checks { gap: 12px; margin: 12px 0 18px; }
+.app-shell .market-checks article { border-radius: 7px; background: var(--surface); }
+.app-shell table { font-variant-numeric: tabular-nums; }
+.app-shell th { font-size: 10px; letter-spacing: .07em; }
+.app-shell td { font-size: 12px; }
+.app-shell tbody tr { transition: background-color 140ms ease; }
+.app-shell tbody tr:hover { background: var(--surface-hover); }
+:root[data-theme] .app-shell .market-terminal { margin: 0; background: var(--surface); border-color: var(--line); }
+.app-shell .terminal-heading { padding: 18px 20px; }
+.app-shell .terminal-heading h2 { font-size: 18px; gap: 14px; }
+.app-shell .terminal-heading h2 strong { font: 600 25px var(--font-mono, monospace); }
+.app-shell .terminal-heading p { font-size: 10px; margin: 5px 0 0; }
+.app-shell .terminal-toolbar { padding: 10px 16px; }
+.app-shell .terminal-segment { border-radius: 6px; padding: 3px; }
+.app-shell .terminal-segment button { font-size: 11px; min-height: 30px; border-radius: 4px; padding: 7px 12px; }
+:root[data-theme] .app-shell .terminal-segment button[aria-pressed='true'] { color: var(--blue); background: var(--surface-hover); border: 1px solid var(--blue); }
+.app-shell .terminal-tools button { font-size: 10px; padding: 7px 10px; border-radius: 4px; }
+.terminal-history-menu { position: relative; }
+.app-shell .terminal-history-menu summary { padding: 7px 10px; border: 1px solid var(--line); border-radius: 4px; font-size: 10px; cursor: pointer; background: var(--surface-raised); }
+.terminal-history-menu > div { position: absolute; right: 0; top: calc(100% + 6px); display: flex; gap: 6px; min-width: 240px; padding: 10px; z-index: 9; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); box-shadow: 0 8px 24px #0003; }
+.app-shell .terminal-history-menu summary:hover { border-color: var(--blue); }
+.terminal-data-details { flex: 1; min-width: 0; }
+.terminal-data-details summary { cursor: pointer; color: var(--text); }
+.terminal-data-details p { line-height: 1.7; max-width: 800px; }
+.app-shell .terminal-zones { padding: 8px 20px; }
+.app-shell .terminal-zones details { margin: 0; }
+.app-shell .terminal-zones details + details { border-top: 1px solid var(--line); }
+.app-shell .terminal-zone-list[open] { padding-bottom: 16px; }
+.app-shell .terminal-layers { padding: 12px 16px; gap: 12px; font-size: 11px; background: var(--surface-raised); }
+.app-shell .terminal-layers small { flex-basis: 100%; margin: 0; font-size: 9px; line-height: 1.6; }
+.app-shell .terminal-ohlc { font-size: 10px; padding: 10px 16px; gap: 14px; }
+.app-shell .terminal-analysis article { padding: 18px; }
+.app-shell .terminal-analysis h3 { font-size: 16px; line-height: 1.4; margin-top: 10px; }
+.app-shell .terminal-analysis p { font-size: 12px; line-height: 1.7; }
+.app-shell .terminal-analysis small { font-size: 10px; line-height: 1.6; }
+.app-shell .terminal-probabilities > div { border-radius: 6px; }
+.app-shell .terminal-zone { border-radius: 6px; }
+.app-shell .modern-comm-node { transition: border-color 150ms ease, background-color 150ms ease; }
+.app-shell .modern-comm-node:hover { border-color: var(--blue); }
+.app-shell .autonomy-status { padding: 18px 20px; }
+.app-shell .autonomy-status .section-heading { margin: 0 0 14px; }
+.app-shell .autonomy-grid { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin: 14px 0; }
+.app-shell .autonomy-grid > div { padding: 14px; border-radius: 7px; background: var(--surface-raised); }
+.app-shell .autonomy-grid strong { font-size: 12px; }
+.app-shell .autonomy-grid p, .app-shell .autonomy-status > p { font-size: 12px; line-height: 1.65; }
+.app-shell .autonomy-status > p { margin: 12px 0; }
+.app-shell .autonomy-status summary { font-size: 12px; }
+@keyframes terminal-enter { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes terminal-heartbeat { 50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 15%, transparent); } }
+@media (max-width: 1050px) {
+ .app-shell .market-quote { grid-template-columns: 1fr auto; }
+ .app-shell .market-quote > :nth-child(3) { justify-self: start; }
+ .app-shell .market-quote > small { grid-row: 3; }
+}
+@media (max-width: 650px) {
+ :root[data-theme] .app-shell { padding: 0 12px 24px; }
+ :root[data-theme] .app-shell .topbar { align-items: flex-start; flex-direction: column; gap: 12px; }
+ .app-shell .topbar-right { flex-direction: row; align-items: center; justify-content: flex-start; gap: 8px; }
+ .app-shell .market-values { grid-template-columns: 1fr; gap: 8px; }
+ .app-shell .market-price { font-size: 22px; }
+ .app-shell .market-quote { padding: 12px; }
+ :root[data-theme] .app-shell .tabs button { padding: 10px 12px; font-size: 11px; }
+ .app-shell .terminal-heading { padding: 16px; gap: 16px; flex-wrap: wrap; }
+ .app-shell .terminal-heading h2 strong { font-size: 22px; }
+ .app-shell .section-heading { flex-wrap: wrap; gap: 12px; }
+ .app-shell .terminal-tools { position: relative; max-width: 100%; flex-wrap: wrap; }
+ .app-shell .terminal-history-menu { position: static; }
+ .app-shell .terminal-history-menu > div { left: 0; right: auto; min-width: 0; width: max-content; max-width: 100%; flex-wrap: wrap; }
+}
+@media (prefers-reduced-motion: reduce) {
+ .app-shell *, .app-shell *::before, .app-shell *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+ .app-shell button:active:not(:disabled) { transform: none; }
+}

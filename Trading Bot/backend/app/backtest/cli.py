@@ -4,12 +4,13 @@ from pathlib import Path
 from dataclasses import replace
 from .data import read_contract_csv
 from .reconstruction import dhan_research
-from .engine import BacktestEngine, BacktestConfig
+from .engine import BacktestEngine
 from .reports import report_from_run
 from .walk_forward import validation_windows
 from ..store import Store, json_safe
 from ..config import settings, current_credentials
-from ..risk import PlanRiskPolicy
+from .configuration import build_replay_config
+from ..option_screen import VERSION as SCREEN_VERSION
 from ..market_data import DhanGateway, HISTORY_CACHE_ONLY
 
 
@@ -20,8 +21,10 @@ def main():
     parser.add_argument("--from",dest="from_date")
     parser.add_argument("--to",dest="to_date")
     parser.add_argument("--symbols",default="NIFTY,SENSEX")
-    parser.add_argument("--capital",type=float,default=30000)
+    parser.add_argument("--capital",type=float,default=settings.paper_capital)
     parser.add_argument("--strategy",choices=("orb_retest","trend_pullback","range_rejection","portfolio"))
+    parser.add_argument("--option-screen",choices=("legacy",SCREEN_VERSION),default=None)
+    parser.add_argument("--min-net-reward-risk",type=float,default=settings.min_net_reward_risk)
     parser.add_argument("--walk-forward",action="store_true",help="Report disjoint base-rule validation windows; does not promote policies")
     args=parser.parse_args()
     if args.capital<=0: parser.error("Capital must be positive")
@@ -29,6 +32,8 @@ def main():
     if args.source=="rolling-cache" and (not args.from_date or not args.to_date):
         parser.error("--from and --to are required for --source rolling-cache")
     if args.source=="rolling-cache":
+        if args.option_screen not in (None,"legacy") or args.min_net_reward_risk!=settings.min_net_reward_risk:
+            parser.error("Option-screen comparisons require exact-contract CSV; rolling data cannot verify them")
         if args.strategy not in (None,"orb_retest"):
             parser.error("rolling-cache supports only orb_retest; use exact-contract CSV for other strategies")
         if args.walk_forward:
@@ -58,11 +63,9 @@ def main():
         print(json.dumps(json_safe(result),indent=2,allow_nan=False))
         return
     frame,digest=read_contract_csv(Path(args.csv),{"session_exit":settings.session_exit})
-    cfg=BacktestConfig(initial_capital=args.capital,strategy_mode=args.strategy or "portfolio",
-                       risk_per_trade=settings.max_trade_risk_rupees,daily_loss_limit=settings.daily_loss_limit_rupees,
-                       correlated_risk_limit=settings.max_correlated_risk_rupees,monthly_target=settings.monthly_profit_target,
-                       entry_cutoff=settings.entry_cutoff,exit_at=settings.session_exit,
-                       plan_policy=PlanRiskPolicy.from_settings(settings),adaptive_exits=True)
+    cfg,config=build_replay_config(settings,{"source":"csv","capital":args.capital,"dataset_id":digest,
+        "strategy_mode":args.strategy or "portfolio","option_screen":args.option_screen,
+        "min_net_reward_risk":args.min_net_reward_risk})
     if args.walk_forward:
         windows=validation_windows(frame.timestamp.dt.strftime("%Y-%m-%d"))
         if not windows: parser.error("At least 50 complete sessions are required")
@@ -73,7 +76,7 @@ def main():
             run=BacktestEngine(replace(cfg,trade_from=start)).run(subset)
             result[part]={"from":start,"to":end,"quality":run["quality"],"metrics":run["metrics"],"issues":run["issues"]}
     else:
-        result=report_from_run(BacktestEngine(cfg).run(frame),{"capital":args.capital,"dataset_id":digest})
+        result=report_from_run(BacktestEngine(cfg).run(frame),config)
     print(json.dumps(json_safe(result),indent=2,allow_nan=False))
 
 

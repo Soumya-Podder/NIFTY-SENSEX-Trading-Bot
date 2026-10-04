@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     # .env remains authoritative at runtime, but these values must not fall back
     # to the superseded limits when a worker/test loads settings without an env
     # file or after a clean checkout.
-    max_trade_risk_rupees: float = Field(default=600,gt=0,allow_inf_nan=False)
+    max_trade_risk_rupees: float = Field(default=650,gt=0,allow_inf_nan=False)
     daily_loss_limit_rupees: float = Field(default=1200,gt=0,allow_inf_nan=False)
     hard_daily_halt_rupees: float = Field(default=1200,gt=0,allow_inf_nan=False)
     max_open_positions: int = Field(default=1,ge=1,le=2)
@@ -37,15 +37,18 @@ class Settings(BaseSettings):
     paper_only: bool = True
     paper_autostart: bool = True
     paper_collect_evidence: bool = True
-    paper_strategy_mode: Literal["portfolio","orb_only"] = "portfolio"
+    paper_strategy_mode: Literal["autonomous","simple","portfolio","orb_only"] = "autonomous"
     session_start: str = "09:15"
     entry_cutoff: str = "14:30"
     session_exit: str = "15:05"
     max_quote_age_seconds: int = Field(default=2,ge=1,le=30)
-    max_spread_pct: float = Field(default=.03,gt=0,lt=1,allow_inf_nan=False)
-    max_correlated_risk_rupees: float = Field(default=600,gt=0,allow_inf_nan=False)
-    monthly_profit_target: float = Field(default=20000,gt=0,allow_inf_nan=False)
-    monthly_profit_target_basis: Literal["gross", "net"] = "gross"
+    underlying_quote_age_seconds: int = Field(default=5,ge=1,le=15)
+    # Option-buying screen: spread is (ask - bid) / midpoint.
+    max_spread_pct: float = Field(default=.02,gt=0,lt=1,allow_inf_nan=False)
+    min_net_reward_risk: float = Field(default=1.,ge=1,le=3,allow_inf_nan=False)
+    max_correlated_risk_rupees: float = Field(default=650,gt=0,allow_inf_nan=False)
+    monthly_profit_target: float = Field(default=18000,gt=0,allow_inf_nan=False)
+    monthly_profit_target_basis: Literal["gross", "net"] = "net"
     learning_min_train_trades: int = 60
     learning_min_context_trades: int = Field(default=20,gt=0)
     learning_min_validation_trades: int = 30
@@ -60,6 +63,7 @@ class Settings(BaseSettings):
     exit_cooldown_minutes: int = Field(default=5,ge=0)
     weekly_loss_pause_rupees: float = Field(default=1700,gt=0,allow_inf_nan=False)
     drawdown_pause_rupees: float = Field(default=2550,gt=0,allow_inf_nan=False)
+    market_observation_max_bytes: int = Field(default=10 * 1024**3, ge=1024**3)
 
     # LLM Integration (OpenRouter)
     openrouter_api_key: str = Field(default="", description="OpenRouter API key for LLM integration")
@@ -74,6 +78,8 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
     telegram_timeout_seconds: int = Field(default=10, ge=2, le=30)
+    telegram_position_update_seconds: int = Field(default=2, ge=2, le=60)
+    telegram_session_report_time: str = "15:35"
 
     model_config = SettingsConfigDict(env_file=(str(PROJECT_ENV), ".env"), extra="ignore")
 
@@ -85,6 +91,8 @@ class Settings(BaseSettings):
             raise ValueError("Correlated risk must not exceed daily loss cap")
         if not time.fromisoformat(self.session_start)<time.fromisoformat(self.entry_cutoff)<time.fromisoformat(self.session_exit):
             raise ValueError("Session start, entry cutoff and exit must be ordered")
+        if time.fromisoformat(self.telegram_session_report_time)<time.fromisoformat(self.session_exit):
+            raise ValueError("Telegram session report must not precede the liquidation window")
         return self
 
 settings = Settings()

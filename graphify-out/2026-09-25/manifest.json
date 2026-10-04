@@ -1,0 +1,776 @@
+{
+  ".claude/settings.local.json": {
+    "mtime": 1789194026.426399,
+    "seen": 1789833462.6602054,
+    "ast_hash": "2cecd26dc603c9b2cdd84a173126ff13",
+    "semantic_hash": "2cecd26dc603c9b2cdd84a173126ff13"
+  },
+  ".codex/hooks.json": {
+    "mtime": 1789488016.9872222,
+    "seen": 1789833462.6602054,
+    "ast_hash": "5ebef3dd159986e465ab65e4014107ec",
+    "semantic_hash": "5ebef3dd159986e465ab65e4014107ec"
+  },
+  "Trading Bot/backend/app/__init__.py": {
+    "mtime": 1788527635.2693415,
+    "seen": 1789833462.6602054,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "Trading Bot/backend/app/adaptive_exit.py": {
+    "mtime": 1789104706.4379,
+    "seen": 1789833462.6602054,
+    "ast_hash": "bf396ead56263cad363189335134e76c",
+    "semantic_hash": "bf396ead56263cad363189335134e76c"
+  },
+  "Trading Bot/backend/app/ai.py": {
+    "mtime": 1789907526.3389397,
+    "seen": 1789909530.0295289,
+    "ast_hash": "80be61bc501ea9cdbabcbf38fec2d6d8",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/app/autonomous_agent.py": {
+    "mtime": 1789836248.094127,
+    "seen": 1789836269.936369,
+    "ast_hash": "7efbd3046b236cc880c903a8e63881e7",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/app/backtest/__init__.py": {
+    "mtime": 1788527635.3275764,
+    "seen": 1789833462.6602054,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "Trading Bot/backend/app/backtest/cli.py": {
+    "mtime": 1789882286.3869126,
+    "seen": 1789883121.797091,
+    "ast_hash": "fe3e7b2a8a88d26ea28017d4068055a3",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/app/backtest/csv_adapter.py": {
+    "mtime": 1789237952.9999774,
+    "seen": 1789833462.6602054,
+    "ast_hash": "359eae0cf4054b23ba4bfe136ed4b141",
+    "semantic_hash": "359eae0cf4054b23ba4bfe136ed4b141"
+  },
+  "Trading Bot/backend/app/backtest/data.py": {
+    "mtime": 1789882430.8240294,
+    "seen": 1789883121.797091,
+    "ast_hash": "3c478f703d1f512f8c7a384942214afc",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/app/backtest/download.py": {
+    "mtime": 1789108180.4109874,
+    "seen": 1789833462.6602054,
+    "ast_hash": "565be82bdd5d56e42fe5c56209398c67",
+    "semantic_hash": "565be82bdd5d56e42fe5c56209398c67"
+  },
+  "Trading Bot/backend/app/backtest/engine.py": {
+    "mtime": 1789906942.6976554,
+    "seen": 1789907057.9078352,
+    "ast_hash": "122df683a77cfbd13c26910661141210",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/app/backtest/estimation.py": {
+    "mtime": 1789324043.6387348,
+    "seen": 1789833462.6602054,
+    "ast_hash": "c995b9a9d0ee7e5639b24593a3552ae1",
+    "semantic_hash": "c995b9a9d0ee7e5639b24593a3552ae1"
+  },
+  "Trading Bot/backend/app/backtest/jobs.py": {
+    "mtime": 1789833332.320723,
+    "seen": 1789833462.6602054,
+    "ast_hash": "b40efd386e8671fb8bf466a1c09be06b",
+    "semantic_hash": "b40efd386e8671fb8bf466a1c09be06b"
+  },
+  "Trading Bot/backend/app/backtest/metrics.py": {
+    "mtime": 1789833333.2700741,
+    "seen": 1789833462.6602054,
+    "ast_hash": "22c20db28485d8769101653d5d6511ec",
+    "semantic_hash": "22c20db28485d8769101653d5d6511ec"
+  },
+  "Trading Bot/backend/app/backtest/presentation.py": {
+    "mtime": 1789882286.3839142,
+    "seen": 1789883121.797091,
+    "ast_hash": "c63fd33e70f5c56963a9a5116edfeedf",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/app/backtest/reconstruction.py": {
+    "mtime": 1789833357.095789,
+    "seen": 1789833462.6602054,
+    "ast_hash": "cd3473b0dafa46e9ad3f26decd093c28",
+    "semantic_hash": "cd3473b0dafa46e9ad3f26decd093c28"
+  },
+  "Trading Bot/backend/app/backtest/reports.py": {
+    "mtime": 1789324043.641957,
+    "seen": 1789833462.6602054,
+    "ast_hash": "08f6bc63e44e3c9a181b3285c8da6c10",
+    "semantic_hash": "08f6bc63e44e3c9a181b3285c8da6c10"
+  },
+  "Trading Bot/backend/app/backtest/strategy_signals.py": {
+    "mtime": 1789231619.9623926,
+    "seen": 1789833462.6602054,
+    "ast_hash": "a0e95d8d50e2368e3644584b538f9175",
+    "semantic_hash": "a0e95d8d50e2368e3644584b538f9175"
+  },
+  "Trading Bot/backend/app/backtest/walk_forward.py": {
+    "mtime": 1788626751.845168,
+    "seen": 1789833462.6602054,
+    "ast_hash": "43568807d6e277446c340d3443ff6d96",
+    "semantic_hash": "43568807d6e277446c340d3443ff6d96"
+  },
+  "Trading Bot/backend/app/broker.py": {
+    "mtime": 1790302257.3982272,
+    "seen": 1790313238.9825122,
+    "ast_hash": "d53ab2fb8fc83dd915e967a4300bec06",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/app/circuit_breaker.py": {
+    "mtime": 1788527635.2633388,
+    "seen": 1789833462.6602054,
+    "ast_hash": "c52866a77e482615ec3aede717855ab9",
+    "semantic_hash": "c52866a77e482615ec3aede717855ab9"
+  },
+  "Trading Bot/backend/app/config.py": {
+    "mtime": 1790331149.8435433,
+    "seen": 1790331285.19876,
+    "ast_hash": "23e36e2c853396e16ab6d431837ce09b",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/app/expectancy.py": {
+    "mtime": 1789907512.3910177,
+    "seen": 1789909530.0295289,
+    "ast_hash": "ab7cfd61eaf0650313a678aa0b6c2c31",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/app/forward_comparison.py": {
+    "mtime": 1789399481.130133,
+    "seen": 1789833462.6602054,
+    "ast_hash": "b7c6d2e9dd429db7dffd89bc60fbe7e1",
+    "semantic_hash": "b7c6d2e9dd429db7dffd89bc60fbe7e1"
+  },
+  "Trading Bot/backend/app/indicators.py": {
+    "mtime": 1789104947.7279398,
+    "seen": 1789833462.6602054,
+    "ast_hash": "d015d772ede87353cb493e94b205e000",
+    "semantic_hash": "d015d772ede87353cb493e94b205e000"
+  },
+  "Trading Bot/backend/app/individual_agent_audit.py": {
+    "mtime": 1789486831.0163996,
+    "seen": 1789833462.6602054,
+    "ast_hash": "d8a175ecebb0535f401a82e2166b5aad",
+    "semantic_hash": "d8a175ecebb0535f401a82e2166b5aad"
+  },
+  "Trading Bot/backend/app/learning_monitor.py": {
+    "mtime": 1789487121.3977191,
+    "seen": 1789833462.6602054,
+    "ast_hash": "a9b2810f36be056704567e623f929852",
+    "semantic_hash": "a9b2810f36be056704567e623f929852"
+  },
+  "Trading Bot/backend/app/learning_validation.py": {
+    "mtime": 1789398992.238268,
+    "seen": 1789833462.6602054,
+    "ast_hash": "70926ce92f4a5b35eba587bbe918c3d6",
+    "semantic_hash": "70926ce92f4a5b35eba587bbe918c3d6"
+  },
+  "Trading Bot/backend/app/main.py": {
+    "mtime": 1790302408.564775,
+    "seen": 1790313238.9825122,
+    "ast_hash": "0ddc544c8f7e32619b3d4b99f2c0feb4",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/app/market_calendar.py": {
+    "mtime": 1789275493.588776,
+    "seen": 1789833462.6602054,
+    "ast_hash": "59685501d7a73b25f415b05563ecac6f",
+    "semantic_hash": "59685501d7a73b25f415b05563ecac6f"
+  },
+  "Trading Bot/backend/app/market_data.py": {
+    "mtime": 1790316688.1279867,
+    "seen": 1790316786.251812,
+    "ast_hash": "be31d0aa83080655b795c2612d40394d",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/app/models.py": {
+    "mtime": 1788797848.0573573,
+    "seen": 1789833462.6602054,
+    "ast_hash": "75e4d5f359071c33526d9ac6a1485031",
+    "semantic_hash": "75e4d5f359071c33526d9ac6a1485031"
+  },
+  "Trading Bot/backend/app/options.py": {
+    "mtime": 1788797989.8553472,
+    "seen": 1789833462.6602054,
+    "ast_hash": "499999fc6ad2f95e88fe8f94c554d089",
+    "semantic_hash": "499999fc6ad2f95e88fe8f94c554d089"
+  },
+  "Trading Bot/backend/app/paper_engine.py": {
+    "mtime": 1790331193.8806481,
+    "seen": 1790331285.19876,
+    "ast_hash": "f9ffe687f27d0f3e558587686043f44d",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/app/paper_performance.py": {
+    "mtime": 1789275604.969966,
+    "seen": 1789833462.6602054,
+    "ast_hash": "5e49313b6ba4812bf016fe55c1ebd6c2",
+    "semantic_hash": "5e49313b6ba4812bf016fe55c1ebd6c2"
+  },
+  "Trading Bot/backend/app/pipeline.py": {
+    "mtime": 1789231020.3776357,
+    "seen": 1789833462.6602054,
+    "ast_hash": "47ae6a4d46fb3ad9090fca1072d8f2e3",
+    "semantic_hash": "47ae6a4d46fb3ad9090fca1072d8f2e3"
+  },
+  "Trading Bot/backend/app/portfolio_engine.py": {
+    "mtime": 1790257748.8062952,
+    "seen": 1790313238.9825122,
+    "ast_hash": "7c57b4522fd74570787898508e8dbd10",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/app/provenance.py": {
+    "mtime": 1789302186.0442016,
+    "seen": 1789833462.6602054,
+    "ast_hash": "e2f02ae87a6430aca05b387e4adf150e",
+    "semantic_hash": "e2f02ae87a6430aca05b387e4adf150e"
+  },
+  "Trading Bot/backend/app/quote_recorder.py": {
+    "mtime": 1790316688.1259787,
+    "seen": 1790316786.251812,
+    "ast_hash": "eacf9b2cc8a9b3a475ff1e387aee4f9a",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/app/regime.py": {
+    "mtime": 1788626422.7001157,
+    "seen": 1789833462.6602054,
+    "ast_hash": "df4a0e1bf2922af7378f67fd78808b6d",
+    "semantic_hash": "df4a0e1bf2922af7378f67fd78808b6d"
+  },
+  "Trading Bot/backend/app/risk.py": {
+    "mtime": 1790185728.693716,
+    "seen": 1790313238.9825122,
+    "ast_hash": "d98560f33b877c90cc64d9d50248c4e3",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/app/runtime_health.py": {
+    "mtime": 1789230958.6908474,
+    "seen": 1789833462.6602054,
+    "ast_hash": "90e545498c4553ccf01e3b687e9708c9",
+    "semantic_hash": "90e545498c4553ccf01e3b687e9708c9"
+  },
+  "Trading Bot/backend/app/session.py": {
+    "mtime": 1789275494.963571,
+    "seen": 1789833462.6602054,
+    "ast_hash": "ece863449719d075c58dd2bcab3ebb09",
+    "semantic_hash": "ece863449719d075c58dd2bcab3ebb09"
+  },
+  "Trading Bot/backend/app/setups.py": {
+    "mtime": 1788796502.4987767,
+    "seen": 1789833462.6602054,
+    "ast_hash": "d14d77432e88274f94ab40b911ba4ded",
+    "semantic_hash": "d14d77432e88274f94ab40b911ba4ded"
+  },
+  "Trading Bot/backend/app/specialist_agents.py": {
+    "mtime": 1790257716.180867,
+    "seen": 1790313238.9825122,
+    "ast_hash": "6cc991898740b615f4a796716ae65ee7",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/app/store.py": {
+    "mtime": 1790313099.4325547,
+    "seen": 1790313238.9825122,
+    "ast_hash": "085e2c9a1da8344b9dde6e8b1abefe92",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/app/strategy_portfolio.py": {
+    "mtime": 1789487149.3543699,
+    "seen": 1789833462.6602054,
+    "ast_hash": "4e7a3ffe5fba37f83ba8fcdeac70bfce",
+    "semantic_hash": "4e7a3ffe5fba37f83ba8fcdeac70bfce"
+  },
+  "Trading Bot/backend/app/telemetry/__init__.py": {
+    "mtime": 1788538345.0192215,
+    "seen": 1789833462.6602054,
+    "ast_hash": "6b4617ca18aaa5dd29b2538a1c490b58",
+    "semantic_hash": "6b4617ca18aaa5dd29b2538a1c490b58"
+  },
+  "Trading Bot/backend/app/telemetry/agent_metrics.py": {
+    "mtime": 1789197817.4135535,
+    "seen": 1789833462.6602054,
+    "ast_hash": "a10ff60a3855dcbd183e4c12600e13a1",
+    "semantic_hash": "a10ff60a3855dcbd183e4c12600e13a1"
+  },
+  "Trading Bot/backend/app/telemetry/decision_trace.py": {
+    "mtime": 1789406546.0646017,
+    "seen": 1789833462.6602054,
+    "ast_hash": "b5bf3083544aeffa2b5cd7effb7b014b",
+    "semantic_hash": "b5bf3083544aeffa2b5cd7effb7b014b"
+  },
+  "Trading Bot/backend/app/telemetry/event_bus.py": {
+    "mtime": 1788626478.8218093,
+    "seen": 1789833462.6602054,
+    "ast_hash": "34eef2b0e19658d7485ce150aa8485f9",
+    "semantic_hash": "34eef2b0e19658d7485ce150aa8485f9"
+  },
+  "Trading Bot/backend/paper_service.py": {
+    "mtime": 1788845559.995083,
+    "seen": 1789833462.6602054,
+    "ast_hash": "5e04aae7fd9c36b154c470e136984f7e",
+    "semantic_hash": "5e04aae7fd9c36b154c470e136984f7e"
+  },
+  "Trading Bot/backend/tests/__init__.py": {
+    "mtime": 1788527635.199217,
+    "seen": 1789833462.6602054,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "Trading Bot/backend/tests/test_adaptive_learning.py": {
+    "mtime": 1789907384.3853636,
+    "seen": 1789909530.0295289,
+    "ast_hash": "592e2a1e30533b05ba54d98121cf603c",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/tests/test_backtest.py": {
+    "mtime": 1789906997.5071487,
+    "seen": 1789907057.9078352,
+    "ast_hash": "ddcb781a59324e789d6924ca31b93b06",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/tests/test_decision_trace.py": {
+    "mtime": 1789406783.8542547,
+    "seen": 1789833462.6602054,
+    "ast_hash": "88c07199b80e1f57b4fd394c940667a5",
+    "semantic_hash": "88c07199b80e1f57b4fd394c940667a5"
+  },
+  "Trading Bot/backend/tests/test_estimated_exits.py": {
+    "mtime": 1789324164.2582443,
+    "seen": 1789833462.6602054,
+    "ast_hash": "4c160d5f92ee4840643ff60665b82457",
+    "semantic_hash": "4c160d5f92ee4840643ff60665b82457"
+  },
+  "Trading Bot/backend/tests/test_execution_integrity.py": {
+    "mtime": 1789836248.098125,
+    "seen": 1789836269.936369,
+    "ast_hash": "e0970b78b5fc964f3a37e77f9dfaf3b6",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/tests/test_forward_comparison.py": {
+    "mtime": 1789399558.918896,
+    "seen": 1789833462.6602054,
+    "ast_hash": "c8292b63a304b780f89adefaaf56f165",
+    "semantic_hash": "c8292b63a304b780f89adefaaf56f165"
+  },
+  "Trading Bot/backend/tests/test_individual_agent_audit.py": {
+    "mtime": 1789486859.8680022,
+    "seen": 1789833462.6602054,
+    "ast_hash": "0fad794efbdbf82bb343035a061e4f2e",
+    "semantic_hash": "0fad794efbdbf82bb343035a061e4f2e"
+  },
+  "Trading Bot/backend/tests/test_jobs.py": {
+    "mtime": 1790185882.0312428,
+    "seen": 1790313238.9825122,
+    "ast_hash": "056f7073888624d7a8f3e447a26ed51d",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/tests/test_learning_monitor.py": {
+    "mtime": 1789905168.7085485,
+    "seen": 1789906799.9499235,
+    "ast_hash": "fa544475591bee40574b9ebea76f6ac5",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/tests/test_learning_validation.py": {
+    "mtime": 1789399062.5519922,
+    "seen": 1789833462.6602054,
+    "ast_hash": "ee6cc39b6760e6d0ab52454d756709ed",
+    "semantic_hash": "ee6cc39b6760e6d0ab52454d756709ed"
+  },
+  "Trading Bot/backend/tests/test_market_calendar.py": {
+    "mtime": 1789275494.9887884,
+    "seen": 1789833462.6602054,
+    "ast_hash": "8597fe34b72bc556f820d99cf8616e99",
+    "semantic_hash": "8597fe34b72bc556f820d99cf8616e99"
+  },
+  "Trading Bot/backend/tests/test_options.py": {
+    "mtime": 1788797870.892424,
+    "seen": 1789833462.6602054,
+    "ast_hash": "b15e5ae1b3d4b097838614131bf56564",
+    "semantic_hash": "b15e5ae1b3d4b097838614131bf56564"
+  },
+  "Trading Bot/backend/tests/test_paper.py": {
+    "mtime": 1790185882.029258,
+    "seen": 1790313238.9825122,
+    "ast_hash": "f11d8a7387a24c177112454d317e0d30",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/tests/test_paper_performance.py": {
+    "mtime": 1789275604.9719818,
+    "seen": 1789833462.6602054,
+    "ast_hash": "329bd304b002860b6dafffd5e0440d84",
+    "semantic_hash": "329bd304b002860b6dafffd5e0440d84"
+  },
+  "Trading Bot/backend/tests/test_portfolio_replay.py": {
+    "mtime": 1789231705.2227738,
+    "seen": 1789833462.6602054,
+    "ast_hash": "d527f1d60aa79bc370a3ff3ccb2a0db0",
+    "semantic_hash": "d527f1d60aa79bc370a3ff3ccb2a0db0"
+  },
+  "Trading Bot/backend/tests/test_quote_recorder.py": {
+    "mtime": 1790316688.12899,
+    "seen": 1790316786.251812,
+    "ast_hash": "a6d89d7eba2afce1ae007be643e3db3c",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/tests/test_reconstruction.py": {
+    "mtime": 1789905168.709548,
+    "seen": 1789906799.9499235,
+    "ast_hash": "a12dc27d87eb84ee08e881acea732eba",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/tests/test_report_presentation.py": {
+    "mtime": 1789833357.0997944,
+    "seen": 1789833462.6602054,
+    "ast_hash": "ad261a4ac75bd374dd52dc365a911653",
+    "semantic_hash": "ad261a4ac75bd374dd52dc365a911653"
+  },
+  "Trading Bot/backend/tests/test_risk.py": {
+    "mtime": 1789488554.716353,
+    "seen": 1789833462.6602054,
+    "ast_hash": "c236a2cfbfabf542e9fde8291169f132",
+    "semantic_hash": "c236a2cfbfabf542e9fde8291169f132"
+  },
+  "Trading Bot/backend/tests/test_runtime.py": {
+    "mtime": 1790302257.399237,
+    "seen": 1790313238.9825122,
+    "ast_hash": "b18487d5f1e0faaf5e41b147d8109a3e",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/tests/test_specialist_agents.py": {
+    "mtime": 1789487473.2864454,
+    "seen": 1789833462.6602054,
+    "ast_hash": "5d44958cf0373ee8a8e1c3674030e89f",
+    "semantic_hash": "5d44958cf0373ee8a8e1c3674030e89f"
+  },
+  "Trading Bot/backend/tests/test_strategy_portfolio.py": {
+    "mtime": 1790257817.1156242,
+    "seen": 1790313238.9825122,
+    "ast_hash": "7068f30be3ec10324da0cad1e98ba986",
+    "semantic_hash": ""
+  },
+  "Trading Bot/frontend/package.json": {
+    "mtime": 1788539064.7698946,
+    "seen": 1789833462.6602054,
+    "ast_hash": "f936b48f73f36a90bb4d76a623c70166",
+    "semantic_hash": "f936b48f73f36a90bb4d76a623c70166"
+  },
+  "Trading Bot/frontend/src/LearningMonitor.tsx": {
+    "mtime": 1789487047.5979762,
+    "seen": 1789833462.6602054,
+    "ast_hash": "1e08c39500ea68211f4e5ef4dda2a374",
+    "semantic_hash": "1e08c39500ea68211f4e5ef4dda2a374"
+  },
+  "Trading Bot/frontend/src/ModelLearning.tsx": {
+    "mtime": 1789105007.0838335,
+    "seen": 1789833462.6602054,
+    "ast_hash": "a74f90d8309bdb72e0553acf5276062b",
+    "semantic_hash": "a74f90d8309bdb72e0553acf5276062b"
+  },
+  "Trading Bot/frontend/src/StrategyPortfolio.tsx": {
+    "mtime": 1789105007.0995405,
+    "seen": 1789833462.6602054,
+    "ast_hash": "9ba5a5bd7b6bdbb6e6fda51bcb543adb",
+    "semantic_hash": "9ba5a5bd7b6bdbb6e6fda51bcb543adb"
+  },
+  "Trading Bot/frontend/src/TradingWorkspace.tsx": {
+    "mtime": 1789664821.871969,
+    "seen": 1789833462.6602054,
+    "ast_hash": "62a96a0de02dc056705e414750d31d29",
+    "semantic_hash": "62a96a0de02dc056705e414750d31d29"
+  },
+  "Trading Bot/frontend/src/main.tsx": {
+    "mtime": 1790183454.305638,
+    "seen": 1790183589.9641237,
+    "ast_hash": "fabb02f8a4181db0bd81fe0ed05d8d1b",
+    "semantic_hash": ""
+  },
+  "Trading Bot/frontend/src/vite-env.d.ts": {
+    "mtime": 1788539067.908359,
+    "seen": 1789833462.6602054,
+    "ast_hash": "0352474ba2918efe13895edbc3780d94",
+    "semantic_hash": "0352474ba2918efe13895edbc3780d94"
+  },
+  "Trading Bot/frontend/tsconfig.json": {
+    "mtime": 1788539080.5432365,
+    "seen": 1789833462.6602054,
+    "ast_hash": "eb8299829f54dcc1fe04c9f2805f3c5f",
+    "semantic_hash": "eb8299829f54dcc1fe04c9f2805f3c5f"
+  },
+  "Trading Bot/frontend/vite.config.ts": {
+    "mtime": 1788665916.528797,
+    "seen": 1789833462.6602054,
+    "ast_hash": "e20c48c02a9760528915518e73367fed",
+    "semantic_hash": "e20c48c02a9760528915518e73367fed"
+  },
+  "Trading Bot/install_paper_schedule.ps1": {
+    "mtime": 1788845559.9960868,
+    "seen": 1789833462.6602054,
+    "ast_hash": "f8f6bf226eae3cdeab8dbc057ac7a58c",
+    "semantic_hash": "f8f6bf226eae3cdeab8dbc057ac7a58c"
+  },
+  "Trading Bot/run_autonomous_agent.py": {
+    "mtime": 1789833379.4644501,
+    "seen": 1789833462.6602054,
+    "ast_hash": "03ae835a5991ec9cd28db41bee3fe7e6",
+    "semantic_hash": "03ae835a5991ec9cd28db41bee3fe7e6"
+  },
+  "package.json": {
+    "mtime": 1789833651.658638,
+    "seen": 1789835410.0510633,
+    "ast_hash": "c78496158b8e31e30a9ac1077b509c5b",
+    "semantic_hash": ""
+  },
+  ".codex/skills/graphify/SKILL.md": {
+    "mtime": 1789488016.8565056,
+    "seen": 1789661263.0339391,
+    "ast_hash": "1b7d07a7eb4bc6f9b5ee9ec6968a87b8",
+    "semantic_hash": ""
+  },
+  ".codex/skills/graphify/references/add-watch.md": {
+    "mtime": 1789487984.0731494,
+    "seen": 1789661263.0339391,
+    "ast_hash": "58c888b5ec0689a886543dd765c1acc9",
+    "semantic_hash": ""
+  },
+  ".codex/skills/graphify/references/exports.md": {
+    "mtime": 1789487984.0745027,
+    "seen": 1789661263.0339391,
+    "ast_hash": "ecc0c36852fee4ba6280cdf2b9149039",
+    "semantic_hash": ""
+  },
+  ".codex/skills/graphify/references/extraction-spec.md": {
+    "mtime": 1789487984.0755074,
+    "seen": 1789661263.0339391,
+    "ast_hash": "e36dd450e4a3a90f5fe9073f4198fabc",
+    "semantic_hash": ""
+  },
+  ".codex/skills/graphify/references/github-and-merge.md": {
+    "mtime": 1789487984.1282632,
+    "seen": 1789661263.0339391,
+    "ast_hash": "aa0e7ef186392cad062e60483ca7dbbf",
+    "semantic_hash": ""
+  },
+  ".codex/skills/graphify/references/hooks.md": {
+    "mtime": 1789487984.1982956,
+    "seen": 1789661263.0339391,
+    "ast_hash": "0045c2f12c69bff3a641a8908a1ac057",
+    "semantic_hash": ""
+  },
+  ".codex/skills/graphify/references/query.md": {
+    "mtime": 1789487984.1993275,
+    "seen": 1789661263.0339391,
+    "ast_hash": "852ef14334d60a75ae666ea103d4c4f0",
+    "semantic_hash": ""
+  },
+  ".codex/skills/graphify/references/transcribe.md": {
+    "mtime": 1789487984.2004972,
+    "seen": 1789661263.0339391,
+    "ast_hash": "5c6a9af05d12b5797b2fa8b9493dcc37",
+    "semantic_hash": ""
+  },
+  ".codex/skills/graphify/references/update.md": {
+    "mtime": 1789487984.2017002,
+    "seen": 1789661263.0339391,
+    "ast_hash": "07bf4293ea21b4e00a9655dd4e7f0af5",
+    "semantic_hash": ""
+  },
+  "AGENTS.md": {
+    "mtime": 1790185728.6957128,
+    "seen": 1790313238.9825122,
+    "ast_hash": "03d3264b840f1fc11b402b070878b29f",
+    "semantic_hash": ""
+  },
+  "PROJECT_STATUS.md": {
+    "mtime": 1788894938.0583856,
+    "seen": 1789661263.0339391,
+    "ast_hash": "2cf449e7413cd5bc8bb62712046e5045",
+    "semantic_hash": ""
+  },
+  "README.md": {
+    "mtime": 1788895161.4054818,
+    "seen": 1789661263.0339391,
+    "ast_hash": "2dc8321cf383df51435ae24f9955eca7",
+    "semantic_hash": ""
+  },
+  "SELF_LEARNING_STATUS.md": {
+    "mtime": 1789107883.2600253,
+    "seen": 1789661263.0339391,
+    "ast_hash": "af052700dafe87a69113f55e4a50a403",
+    "semantic_hash": ""
+  },
+  "Trading Bot/ARCHITECTURE_CONTRACT.md": {
+    "mtime": 1789905503.8010287,
+    "seen": 1789906799.9499235,
+    "ast_hash": "a11193cb9ae10a41174d459a5ddfe366",
+    "semantic_hash": ""
+  },
+  "Trading Bot/BACKTEST_CHECKPOINT_2026-09-14.md": {
+    "mtime": 1789493878.739651,
+    "seen": 1789661263.0339391,
+    "ast_hash": "9df910d01b02c8f0350ee67f864c7d67",
+    "semantic_hash": ""
+  },
+  "Trading Bot/BACKTEST_UI_AUDIT_2026-09-13.md": {
+    "mtime": 1789318211.7395234,
+    "seen": 1789661263.0339391,
+    "ast_hash": "739acc23b0c1934a428234451c05fb9f",
+    "semantic_hash": ""
+  },
+  "Trading Bot/DATASET_TRADE_RECOMMENDATION.md": {
+    "mtime": 1789238575.81175,
+    "seen": 1789661263.0339391,
+    "ast_hash": "9e415073a67268127e09bc49e98535b8",
+    "semantic_hash": ""
+  },
+  "Trading Bot/LEARNING_MONITOR.md": {
+    "mtime": 1789836043.0750835,
+    "seen": 1789836054.468291,
+    "ast_hash": "59996d0193adf42aa1c3981a07789a76",
+    "semantic_hash": ""
+  },
+  "Trading Bot/MULTI_STRATEGY_EXPANSION.md": {
+    "mtime": 1789238412.6898315,
+    "seen": 1789661263.0339391,
+    "ast_hash": "bfb4579e6d870bc0c4192e522eb03154",
+    "semantic_hash": ""
+  },
+  "Trading Bot/MULTI_STRATEGY_PAPER.md": {
+    "mtime": 1788866907.0674973,
+    "seen": 1789661263.0339391,
+    "ast_hash": "294ee52afb3eb64c6e5887f1ad3eaebd",
+    "semantic_hash": ""
+  },
+  "Trading Bot/NIFTY_SENSEX_Implementation_Plan.md": {
+    "mtime": 1789833379.4934506,
+    "seen": 1789835410.0510633,
+    "ast_hash": "6ab1518802486ac0cb27fb53cd2b8521",
+    "semantic_hash": ""
+  },
+  "Trading Bot/PROJECT_LOGIC.md": {
+    "mtime": 1789237851.1053703,
+    "seen": 1789661263.0339391,
+    "ast_hash": "35fec810e869db0f3db05f05a3341c52",
+    "semantic_hash": ""
+  },
+  "Trading Bot/README.md": {
+    "mtime": 1790257946.0622537,
+    "seen": 1790313238.9825122,
+    "ast_hash": "67959632ce43e755fbb99d2ac4b31c7f",
+    "semantic_hash": ""
+  },
+  "Trading Bot/REMEDIATION_STATUS.md": {
+    "mtime": 1789836043.0780926,
+    "seen": 1789836054.468291,
+    "ast_hash": "efc9c0b57716939809518a9bf5c0bb37",
+    "semantic_hash": ""
+  },
+  "Trading Bot/SELF_LEARNING_CORRECTION.md": {
+    "mtime": 1789238173.9754367,
+    "seen": 1789661263.0339391,
+    "ast_hash": "f23399a90a3478d15d1400ed1e310a86",
+    "semantic_hash": ""
+  },
+  "Trading Bot/SELF_LEARNING_STATUS.md": {
+    "mtime": 1789238173.9754367,
+    "seen": 1789661263.0339391,
+    "ast_hash": "5525c7ebb2b65d69d3efd49a3aeaaa0a",
+    "semantic_hash": ""
+  },
+  "Trading Bot/WHY_IT_WILL_NOT_WORK.md": {
+    "mtime": 1789238639.746041,
+    "seen": 1789661263.0339391,
+    "ast_hash": "3971cb1b1ec212ba11629296ba4d97da",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/requirements.txt": {
+    "mtime": 1789197992.7273278,
+    "seen": 1789661263.0339391,
+    "ast_hash": "4bc40056cda83397a337f615eca769e4",
+    "semantic_hash": ""
+  },
+  "Trading Bot/dhan-api-docs.md": {
+    "mtime": 1788722892.1655838,
+    "seen": 1789661263.0339391,
+    "ast_hash": "b472e7bc90839da26d33d4bf68c63b7f",
+    "semantic_hash": ""
+  },
+  "Trading Bot/frontend/index.html": {
+    "mtime": 1789293972.4754543,
+    "seen": 1789661263.0339391,
+    "ast_hash": "bba62d95a3f27f149cbb5369da5e92bf",
+    "semantic_hash": ""
+  },
+  ".agents/rules/behavioral_guidelines.md": {
+    "mtime": 1789664064.1179705,
+    "seen": 1789664947.0016553,
+    "ast_hash": "fcd2d1995b05e8f09c11d0d7b803deea",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/app/backtest/observation_audit.py": {
+    "mtime": 1789835380.7692463,
+    "seen": 1789835410.0510633,
+    "ast_hash": "7c99175be073341ecc88a78c6bbf967d",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/tests/test_observation_audit.py": {
+    "mtime": 1789835307.072044,
+    "seen": 1789835410.0510633,
+    "ast_hash": "5a1f33fdbbeea63229664719ba308a34",
+    "semantic_hash": ""
+  },
+  ".codex/skills/caveman/SKILL.md": {
+    "mtime": 1789834266.5100198,
+    "seen": 1789835410.0510633,
+    "ast_hash": "5af80a4629f1ef9cbbc3197bd2ef9e71",
+    "semantic_hash": ""
+  },
+  ".codex/skills/ponytail/SKILL.md": {
+    "mtime": 1789834266.5050077,
+    "seen": 1789835410.0510633,
+    "ast_hash": "b9adc0d31b5f475942f9171f126c9fdb",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/app/backtest/observed_session.py": {
+    "mtime": 1789907512.3900104,
+    "seen": 1789909530.0295289,
+    "ast_hash": "56eaf7b18f2b0e52ae700b8bb0d9bd68",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/tests/test_observed_session.py": {
+    "mtime": 1789907384.3863647,
+    "seen": 1789909530.0295289,
+    "ast_hash": "bff47da28cd77879e88cf0b2ffb11c2a",
+    "semantic_hash": ""
+  },
+  "Trading Bot/BACKTEST_EVIDENCE_2026-09-20.md": {
+    "mtime": 1790004450.451138,
+    "seen": 1790181556.8324838,
+    "ast_hash": "84b0d11f2b927a2b336ecf695128e2a7",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/app/telegram.py": {
+    "mtime": 1790183387.3266962,
+    "seen": 1790183589.9641237,
+    "ast_hash": "a9cbf5c4c241484442d330b87c866bbc",
+    "semantic_hash": ""
+  },
+  "Trading Bot/backend/tests/test_telegram.py": {
+    "mtime": 1790331193.8826504,
+    "seen": 1790331285.19876,
+    "ast_hash": "84ce1edec41e35caf0aa78fc1d31bda0",
+    "semantic_hash": ""
+  },
+  ".codex-remote-attachments/01a07f61-650c-7fc3-91b0-0b143d852e0e/6e4ed1ad-f5ae-4b26-87d2-13352c0ca2c0/1-Photo-1.jpg": {
+    "mtime": 1790256925.0194533,
+    "seen": 1790313238.9825122,
+    "ast_hash": "e64a4fe3be00a543ff05b545e0da8b71",
+    "semantic_hash": ""
+  }
+}

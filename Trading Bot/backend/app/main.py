@@ -24,10 +24,15 @@ from .ai import LearningService, get_analysts
 from .learning_monitor import LearningMonitor
 from .provenance import reviewed_report
 from .backtest.presentation import report_view, history_row
-from .runtime_health import execution_health
+from .runtime_health import execution_health, trading_readiness
+from .chart_terminal import ChartTerminal
+from .chart_replay import ChartReplay
 from .backtest.data import dataset_metadata
 from .market_calendar import calendar_info
 from .quote_recorder import QuoteRecorder
+from .simple_paper import SimplePaperEngine
+from .autonomous_paper import AutonomousPaperEngine
+from .dhan_observations import DhanResponseRecorder
 from .forward_comparison import ForwardComparison
 from .autonomous_agent import AutonomousTradingAgent, get_autonomous_agent
 from .telegram import TelegramNotifier
@@ -36,18 +41,30 @@ import uuid
 import asyncio
 
 ROOT=Path(__file__).resolve().parents[2]
-store=Store(ROOT/"backend"/"trading_bot.db")
+store=Store(ROOT/"backend"/"trading_bot.db",keep_open=True)
 gateway=DhanGateway(settings,store,credential_provider=current_credentials)
 plan_policy=PlanRiskPolicy.from_settings(settings)
 telegram=TelegramNotifier(settings.telegram_bot_token,settings.telegram_chat_id,
     settings.telegram_enabled,settings.telegram_timeout_seconds)
 paper=PaperBroker(store,settings.paper_capital,CostModel(store),settings.max_quote_age_seconds,
-    entry_cutoff=settings.entry_cutoff,policy=plan_policy,notifier=telegram)
+    entry_cutoff=settings.entry_cutoff,policy=plan_policy,notifier=telegram,
+    option_screen_limits=(settings.max_spread_pct,settings.min_net_reward_risk))
 market_data=DhanMarketData(settings.dhan_client_id,settings.dhan_access_token,"NIFTY,SENSEX",gateway,store)
-quote_recorder=QuoteRecorder(ROOT/"data"/"market_observations.db")
+quote_archive=ROOT/"data"/"market_observations"
+quote_recorder=QuoteRecorder(
+    quote_archive/f"{now_ist():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:8]}.db",
+    max_bytes=settings.market_observation_max_bytes,
+    archive_dir=quote_archive,legacy_paths=(ROOT/"data"/"market_observations.db",),
+)
 market_data.recorder=quote_recorder
-engine_class=MultiStrategyPaperEngine if settings.paper_strategy_mode=="portfolio" else PaperEngine
+api_recorder=DhanResponseRecorder(ROOT/"data"/"dhan_api_observations.db",capacity=256,batch_size=32,
+    max_bytes=settings.market_observation_max_bytes)
+gateway.response_recorder=api_recorder
+engine_class={"autonomous": AutonomousPaperEngine, "simple": SimplePaperEngine, "portfolio": MultiStrategyPaperEngine,
+              "orb_only": PaperEngine}[settings.paper_strategy_mode]
 engine=engine_class(settings,store,gateway,paper,market_data)
+chart_terminal=ChartTerminal(store,engine,market_data)
+chart_replay=ChartReplay(chart_terminal,ROOT/"data")
 forward_comparison=ForwardComparison(store,engine)
 engine.research_positions=forward_comparison.positions
 engine.forward_comparison=forward_comparison
@@ -69,20 +86,23 @@ async def lifespan(app):
     for item in reversed(store.list_records("events",80)): event_bus.publish(item)
     paper.control(enabled=settings.paper_autostart)
     quote_recorder.start()
+    api_recorder.start()
     telegram.start()
     engine.start(); market_data.start()
-    autonomous_agent.start()
-    if isinstance(engine,MultiStrategyPaperEngine): forward_comparison.start()
-    learning_monitor.start()
+    if settings.paper_strategy_mode in {"portfolio", "orb_only"}: autonomous_agent.start()
+    if settings.paper_strategy_mode == "portfolio": forward_comparison.start()
+    if settings.paper_strategy_mode in {"portfolio", "orb_only"}: learning_monitor.start()
     yield
-    learning_monitor.stop()
+    if settings.paper_strategy_mode in {"portfolio", "orb_only"}: learning_monitor.stop()
     forward_comparison.stop()
-    autonomous_agent.stop()
+    if settings.paper_strategy_mode in {"portfolio", "orb_only"}: autonomous_agent.stop()
     engine.stop(); jobs.stop(); market_data.stop()
     quote_recorder.stop()
+    api_recorder.stop()
     telegram.stop()
     if llm_client:
         await llm_client.close()
+    store.close()
 
 
 app=FastAPI(title="Options Paper Lab",version="4.0.0",lifespan=lifespan)
@@ -111,7 +131,7 @@ class BacktestRequest(BaseModel):
     history_cache_only:bool=True
     estimate_missing_exits:bool=False
     estimate_haircut:float=Field(default=.05,ge=0,le=.25,allow_inf_nan=False)
-    source:Literal["dhan","csv"]="dhan"
+    source:Literal["observed","dhan","csv"]="observed" if settings.paper_strategy_mode=="autonomous" else "dhan"
     underlying:Literal["NIFTY","SENSEX","PARALLEL"]="PARALLEL"
     years:int|None=Field(default=1,ge=0,le=5)
     days:int|None=Field(default=None,ge=1,le=365)
@@ -122,7 +142,8 @@ class BacktestRequest(BaseModel):
     daily_loss_limit:float|None=Field(default=None,gt=0,allow_inf_nan=False)
     correlated_risk_limit:float|None=Field(default=None,gt=0,allow_inf_nan=False)
     dataset:str=""
-    strategy_mode:Literal["orb_retest","trend_pullback","range_rejection","portfolio"]|None=None
+    strategy_mode:Literal["autonomous","orb_retest","trend_pullback","range_rejection","portfolio"]|None=None
+    option_screen:Literal["legacy","option-buyer-v1"]|None=None
 
 
 class LearningReview(BaseModel):
@@ -147,6 +168,7 @@ def telegram_status(): return telegram.status()
 
 @app.post("/api/learning/train",status_code=202)
 def train_learning_model():
+    if isinstance(engine,AutonomousPaperEngine): return json_safe(ml_learning.train(now_ist()))
     if ml_learning.lock.locked(): raise HTTPException(409,detail="Model training is already running")
     report=last_report()
     identifier="manual-"+uuid.uuid4().hex
@@ -286,7 +308,17 @@ def set_mode(request:ModeRequest):
 @app.get("/api/health")
 def health():
     runtime=execution_health(engine,paper)
-    return json_safe(redacted({"app":"healthy" if runtime["healthy"] else "degraded",**mode(),"runtime":runtime,"calendar":calendar_info(now_ist().date()),"engine":engine.status,"broker":paper.health(),"market_data":market_data.snapshot()}))
+    return json_safe(redacted({"app":"healthy" if runtime["healthy"] else "degraded",**mode(),"runtime":runtime,"readiness":readiness(),"calendar":calendar_info(now_ist().date()),"engine":engine.status,"broker":paper.health(),"market_data":market_data.snapshot(),"api_recorder":api_recorder.status()}))
+
+
+def readiness():
+    with engine.lock:
+        candles_ready={symbol:frame is not None and not frame.empty for symbol,frame in engine.frames.items()}
+    return trading_readiness(execution_health(engine,paper),paper.snapshot(),market_data.snapshot(),
+        market_data.executable_quotes(),quote_recorder.status(),settings,candles_ready=candles_ready)
+
+
+engine.entry_readiness=readiness
 
 
 @app.get("/api/risk")
@@ -295,6 +327,8 @@ def risk():
     return {"halted":account["halted"],"reason":account["halt_reason"],"max_trade_risk_rupees":settings.max_trade_risk_rupees,
         "daily_loss_limit_rupees":settings.daily_loss_limit_rupees,"max_correlated_risk_rupees":settings.max_correlated_risk_rupees,
         "hard_daily_halt_rupees":settings.hard_daily_halt_rupees,"max_open_positions":settings.max_open_positions,
+        "option_depth_max_age_seconds":settings.max_quote_age_seconds,
+        "underlying_quote_max_age_seconds":settings.underlying_quote_age_seconds,
         "session_start":settings.session_start,"entry_cutoff":settings.entry_cutoff,"session_exit":settings.session_exit,
         "monthly_target":settings.monthly_profit_target,"target_is_guaranteed":False,
         "target_basis":settings.monthly_profit_target_basis,"plan_policy":plan_policy.describe(),
@@ -308,6 +342,13 @@ def recorded_observation(identifier:str):
     return observation
 
 
+@app.get("/api/market/responses/{identifier}")
+def recorded_api_response(identifier:str):
+    observation=api_recorder.read(identifier)
+    if observation is None: raise HTTPException(404,detail="Response is not durably recorded; it may be queued, missing or dropped")
+    return observation
+
+
 @app.get("/api/learning/forward")
 def forward_learning():
     return {**forward_comparison.status(),"sessions":store.list_records("forward_sessions",100),
@@ -316,6 +357,12 @@ def forward_learning():
 
 @app.get("/api/implementation")
 def implementation_status():
+    if isinstance(engine,AutonomousPaperEngine):
+        return {"specification":"NIFTY_SENSEX_Implementation_Plan.md","phase":"Autonomous paper observation and independent replay",
+                "paper_entries_available":True,"live_available":False,"autonomy":engine.autonomy_status(),
+                "remaining":["Sufficient independent paper outcomes and full-session archived replay for model approval",
+                             "Forward evidence of net profitability; the monthly objective is not established performance",
+                             "Validated event feed, comparable-maturity IV history and execution evidence beyond simulated fills"]}
     latest=next((r for r in store.list_records("reports",100) if r.get("strategy_version")=="orb-retest-v1"),None)
     return {"specification":"NIFTY_SENSEX_Implementation_Plan.md","phase":"Baseline replay / execution integration",
         "entries_ready":False,"paper_entries_available":True,"paper_entries_default_paused":not settings.paper_autostart,
@@ -323,7 +370,7 @@ def implementation_status():
         "baseline_status":"IMPLEMENTED_ORB_RETEST_V1","plan_backtest_status":latest.get("status") if latest else "NOT_RUN",
         "execution_validation":"BLOCKED_DATA","live_available":False,
         "plan_agents":plan_agent_capabilities(),
-        "implemented":["Persisted non-replenishing paper loss allocation", "Atomic one-position/one-lot paper admission",
+        "implemented":["Persisted non-replenishing paper loss allocation", "Atomic one-position, risk-sized whole-lot paper admission",
                        "Cash reserve, entry/loss limits and cooldown", "Fee-aware liquidation triggers",
                        "Weekly/drawdown review locks", "Learning candidates require review; no automatic deployment",
                        "Causal ORB retest baseline and fixed-contract minute replay with structural protection"],
@@ -371,22 +418,61 @@ def paper_trades(): return {"trades":store.list_records("trades",1000),"episodes
 
 @app.get("/api/dashboard")
 def dashboard():
+    if settings.paper_strategy_mode == "simple":
+        from .paper_performance import monthly_progress
+        account = paper.snapshot()
+        account["monthly_progress"] = monthly_progress(account, settings.monthly_profit_target)
+        account.pop("consumed_signals", None)
+        events = event_bus.recent(80)
+        return json_safe(redacted({**mode(), "generated_at": now_ist().isoformat(),
+            "market": market_data.snapshot(), "account": account, "telegram": telegram.status(),
+            "readiness": readiness(), "engine": dict(engine.status), "risk": risk(),
+            "events": events, "strategies": engine.describe_strategies(),
+            "pipelines": {symbol: pipeline_from_events(events, symbol) for symbol in ("NIFTY", "SENSEX")},
+            "jobs": store.list_records("jobs", 10), "latest_report": store.get_record("backtest", "latest", {}),
+            "defaults": {"capital": settings.paper_capital, "risk_per_trade": settings.max_trade_risk_rupees,
+                         "daily_loss_limit": settings.daily_loss_limit_rupees,
+                         "correlated_risk_limit": settings.max_correlated_risk_rupees}}))
     events=event_bus.recent(80); learned=store.learning_snapshot(); account=paper.snapshot()
+    from .paper_performance import monthly_progress
+    account["monthly_progress"]=monthly_progress(account,settings.monthly_profit_target)
     # Reports are fetched by ID, not overwritten by every two-second market refresh.
     result={**mode(),"generated_at":now_ist().isoformat(),"market":market_data.snapshot(),"account":account,
-        "telegram":telegram.status(),
+        "telegram":telegram.status(),"readiness":readiness(),
         "engine":dict(engine.status),"risk":risk(),"events":events,"implementation":implementation_status(),"ml_learning":learning_model(),
         "strategies":engine.describe_strategies() if hasattr(engine,"describe_strategies") else None,
+        "autonomy":engine.autonomy_status() if isinstance(engine,AutonomousPaperEngine) else None,
         "pipelines":{symbol:pipeline_from_events(events,symbol) for symbol in ("NIFTY","SENSEX")},
         "agent_metrics":agent_metrics_from_events(events,learning=learned),"active_policies":store.active_learning_policies(),
         "learning_candidates":store.list_records("learning_candidates",100),
         "jobs":store.list_records("jobs",10),"latest_report":store.get_record("backtest","latest",{}),
         "autonomous_agent":autonomous_agent.get_status() if autonomous_agent.running else {"running": False},
         "defaults":{"capital":settings.paper_capital,"risk_per_trade":settings.max_trade_risk_rupees,
+            "strategy_mode":settings.paper_strategy_mode,
             "daily_loss_limit":settings.daily_loss_limit_rupees,"correlated_risk_limit":settings.max_correlated_risk_rupees}}
     result["learning_monitor"] = learning_monitor.status()
     result["account"].pop("consumed_signals",None)
     return json_safe(redacted(result))
+
+
+@app.get("/api/market/chart/{symbol}")
+def market_chart(symbol: Literal["NIFTY", "SENSEX"], period: Literal["2m", "5m", "15m", "30m", "1h", "2h", "4h"] = "5m"):
+    return json_safe(chart_terminal.snapshot(symbol, period))
+
+
+@app.get("/api/market/structure/{symbol}")
+def market_display_structure(symbol: Literal["NIFTY", "SENSEX"]):
+    snapshot = chart_terminal.snapshot(symbol, "5m")
+    return json_safe({key: snapshot[key] for key in ("symbol", "structure", "source", "history_days", "generated_at")})
+
+
+@app.get("/api/market/replay/{symbol}")
+def market_replay(symbol: Literal["NIFTY", "SENSEX"], day: date,
+                  period: Literal["2m", "5m", "15m", "30m", "1h", "2h", "4h"] = "5m", refresh: bool = False):
+    try:
+        return json_safe(chart_replay.session(symbol, period, day, refresh=refresh))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/api/learning/monitor/history")
@@ -407,6 +493,11 @@ def agents(): return {"metrics":agent_metrics_from_events(event_bus.recent(250),
 def strategies():
     return json_safe(redacted(engine.describe_strategies() if hasattr(engine,"describe_strategies") else
         {"version":"orb-retest-v1","reason":"Single ORB baseline selected"}))
+
+
+@app.get("/api/autonomy")
+def autonomy():
+    return json_safe(engine.autonomy_status() if isinstance(engine,AutonomousPaperEngine) else {"mode":settings.paper_strategy_mode,"authority":"PAPER_ONLY"})
 
 
 @app.get("/api/learning")
@@ -458,6 +549,13 @@ def datasets():
 
 @app.post("/api/backtest/run",status_code=202)
 def run_backtest(request:BacktestRequest):
+    selected_mode="autonomous" if request.source=="observed" else request.strategy_mode
+    if selected_mode=="autonomous":
+        if request.source!="observed": raise HTTPException(422,detail="Autonomous replay requires archived quote and API observations; rolling history or a candle CSV cannot reproduce full-chain decisions")
+        if request.capital>settings.paper_capital or request.risk_per_trade>settings.max_trade_risk_rupees:
+            raise HTTPException(422,detail="Autonomous replay cannot increase the active shared capital or risk limits")
+        if request.daily_loss_limit is not None or request.correlated_risk_limit is not None:
+            raise HTTPException(422,detail="Autonomous replay retains the active daily and correlated protection limits")
     end=request.to_date or (now_ist().date()-timedelta(days=1))
     if end>=now_ist().date(): raise HTTPException(422,detail="Use completed sessions ending before today")
     start=resolve_backtest_start(end,request.from_date,request.days,request.years)
@@ -474,7 +572,8 @@ def run_backtest(request:BacktestRequest):
         "underlying":request.underlying,"from":str(start),"to":str(end),"years":request.years,"days":request.days,
         "capital":request.capital,"risk_per_trade":request.risk_per_trade,"dataset":request.dataset,
         "requested_from":str(requested_start),"range_note":range_note,"monthly_target":settings.monthly_profit_target,
-        "strategy_mode":request.strategy_mode,
+        "strategy_mode":selected_mode,"option_screen":request.option_screen,
+        "monthly_target_basis":settings.monthly_profit_target_basis,
         "estimate_missing_exits":request.estimate_missing_exits,"estimate_haircut":request.estimate_haircut,
         "daily_loss_limit":request.daily_loss_limit,"correlated_risk_limit":request.correlated_risk_limit,
         "interval":1,"strategy_version":"orb-retest-v1","selection":"automatic_non_atm",
@@ -570,11 +669,15 @@ async def websocket(ws:WebSocket):
 
 @app.get("/api/agent/status")
 def agent_status():
+    if isinstance(engine,AutonomousPaperEngine): return json_safe({"running":any(t.is_alive() for t in engine.threads),**engine.autonomy_status()})
     return json_safe(autonomous_agent.get_status())
 
 
 @app.post("/api/agent/control")
 def agent_control(request: PaperControl):
+    if isinstance(engine,AutonomousPaperEngine):
+        paper.control(enabled=request.enabled)
+        return agent_status()
     if request.enabled:
         autonomous_agent.start()
     else:

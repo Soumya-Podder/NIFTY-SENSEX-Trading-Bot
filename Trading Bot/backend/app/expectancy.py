@@ -45,11 +45,16 @@ class CostModel:
         if any(not math.isfinite(v) or v<0 for v in result.values()): raise RuntimeError("Invalid broker charges")
         result["broker_rounding_adjustment"]=result["total"]-sum(v for k,v in result.items() if k!="total")
         result.update(source=self.endpoint,as_of=day,kind="broker_calculator_quote",quantity=int(qty),
+                      captured_at=datetime.now(timezone.utc).isoformat(),
+                      contract_id=contract.get("contract_id"),security_id=str(contract["security_id"]),exchange=contract["exchange"],lot_size=lot,
                       buy_price=round(buy_price,2),sell_price=round(sell_price,2),
                       request_fingerprint=hashlib.sha256(json.dumps(body,sort_keys=True).encode()).hexdigest())
+        if self.store:
+            receipt_id=hashlib.sha256(json.dumps(result,sort_keys=True).encode()).hexdigest()
+            self.store.put_record("broker_fee_receipts",receipt_id,result)
+            self.store.cache_put(key,result,ttl=3600)
         if len(self.memory)>2000: self.memory.clear()
         self.memory[key]=result
-        if self.store: self.store.cache_put(key,result,ttl=3600)
         return result
 
     def quote(self, contract, buy_price, sell_price, qty):
@@ -57,6 +62,29 @@ class CostModel:
 
     def quote_buy(self, contract, buy_price, qty):
         return self._broker_quote(contract,buy_price,0.,qty,"ONLY_BUY","B")
+
+    def fast_exit_estimate(self, position, qty):
+        """Conservative paper exit fee from Dhan quotes saved at entry; no HTTP."""
+        entry = position.get("entry_charges") or {}
+        try:
+            bought = float(entry["total"])
+            fixed = float(entry["brokerage"])
+            reserved = float(position["risk_charge_reserve"])
+            target = float((position.get("entry_economics") or {}).get("target_charges", reserved))
+            remaining = int(position["qty"])
+            if (not all(math.isfinite(v) and v >= 0 for v in (bought,fixed,reserved,target))
+                    or remaining <= 0 or qty <= 0 or qty > remaining):
+                return None
+            full_sell = max(fixed,reserved-bought,target-bought)
+            estimate = fixed + (full_sell-fixed)*qty/remaining
+            return {"total":math.ceil(estimate*100-1e-9)/100,
+                    "brokerage":fixed,"quantity":qty,"estimated":True,
+                    "kind":"entry_broker_prequote_exit_estimate",
+                    "source":entry.get("source",self.endpoint),
+                    "as_of":entry.get("as_of"),
+                    "basis":"Higher of broker stop and target charge quotes saved at entry"}
+        except (KeyError,TypeError,ValueError,OverflowError):
+            return None
 
     @staticmethod
     def historical_key(side, price, qty):

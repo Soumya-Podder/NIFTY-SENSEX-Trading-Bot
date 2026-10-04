@@ -104,18 +104,26 @@ def portfolio_account(tmp_path,monkeypatch):
     monkeypatch.setattr("app.paper_engine.now_ist",lambda:clock["now"])
     monkeypatch.setattr(engine,"_session",lambda:session_state(clock["now"]))
     engine._freeze_policies(clock["now"])
+    # Most tests isolate quote/protection/risk behavior. Current-bar refresh is
+    # exercised separately with real completed-session data in decision-review tests.
+    monkeypatch.setattr(engine,"_current_signal",lambda signal,now:(signal,None))
     return engine,broker,store,clock
 
 
 def candidate(clock,symbol="NIFTY",strategy=1):
     stamp=clock["now"]-timedelta(minutes=1)
     c={"timestamp":stamp.isoformat(),"available_at":clock["now"].isoformat(),"retest_timestamp":(stamp-timedelta(minutes=1)).isoformat(),
-       "option_type":"CALL","setup":"TEST_ONLY_"+STRATEGIES[strategy]["id"],"invalidation":24000}
-    return signal_for(c,STRATEGIES[strategy],symbol,"TREND_UP")
+       "option_type":"CALL","setup":"TEST_ONLY_"+STRATEGIES[strategy]["id"],"invalidation":24000,"underlying_entry":24010,
+       "feature_row":{"timestamp":stamp.isoformat(),"close":24010,"atr":10,"adx":30,"ema9":24009,"ema21":24005,"ema_slope_atr":.4}}
+    if strategy==2:
+        c["underlying_target"]=24030
+        c["feature_row"].update(adx=15,ema_slope_atr=.05)
+    return signal_for(c,STRATEGIES[strategy],symbol,"RANGE" if strategy==2 else "TREND_UP")
 
 
 def executable(clock,symbol="NIFTY",bid=99,low=90):
-    c={**quote(contract(symbol),clock,bid=bid),"oi":1000,"volume":1000,"spread_pct":(100-bid)/100,"option_context":"test"}
+    c={**quote(contract(symbol),clock,bid=bid),"oi":1000,"volume":1000,"spread_pct":(100-bid)/100,"option_context":"test",
+       "delta":.5,"greeks_observed_at":clock["now"].isoformat()}
     return c,{**contract(symbol),"open":95.,"high":99.,"low":low,"close":96.}
 
 
@@ -155,7 +163,7 @@ def test_old_generation_protection_is_discarded(tmp_path,monkeypatch):
 def test_global_selector_chooses_one_offer_and_records_strategy_exit(tmp_path,monkeypatch):
     e,b,store,clock=portfolio_account(tmp_path,monkeypatch)
     offers=[]
-    for symbol,bid in (("NIFTY",98),("SENSEX",99)):
+    for symbol,bid in (("NIFTY",98.5),("SENSEX",99)):
         s=candidate(clock,symbol);c,candle=executable(clock,symbol,bid=bid)
         e.protection_results[(s["id"],c["contract_id"])]=dict(candle=candle,generation=0)
         offer,reason=e._prepare_offer(s,c,b.snapshot(),[],clock["now"])
@@ -177,16 +185,102 @@ def test_global_selector_chooses_one_offer_and_records_strategy_exit(tmp_path,mo
     assert store.list_records("episodes")[0]["reason"]=="TIME_EXIT"
 
 
-@pytest.mark.parametrize("change",["stale","price","generation","cutoff"])
+@pytest.mark.parametrize("change",["stale","generation","cutoff"])
 def test_ranked_offer_is_revalidated_before_fill(tmp_path,monkeypatch,change):
     e,b,store,clock=portfolio_account(tmp_path,monkeypatch);s=candidate(clock);c,candle=executable(clock)
     e.protection_results[(s["id"],c["contract_id"])]=dict(candle=candle,generation=0)
     offer,_=e._prepare_offer(s,c,b.snapshot(),[],clock["now"]);e.quotes[c["contract_id"]]=dict(c)
     if change=="stale": clock["now"]+=timedelta(seconds=3)
-    if change=="price": e.quotes[c["contract_id"]]["ask"]+=1
     if change=="generation": e.gateway.credential_generation=1
     if change=="cutoff": clock["now"]=clock["now"].replace(hour=14,minute=30)
     assert not e._execute_offer(offer) and b.snapshot()["open_positions"]==0
+
+
+def test_new_feed_tick_during_final_snapshot_is_not_mistaken_for_stale_data(tmp_path,monkeypatch):
+    e,b,store,clock=portfolio_account(tmp_path,monkeypatch);s=candidate(clock);c,candle=executable(clock)
+    e.protection_results[(s["id"],c["contract_id"])]=dict(candle=candle,generation=0)
+    offer,_=e._prepare_offer(s,c,b.snapshot(),[],clock["now"])
+    e.market=SimpleNamespace()
+    calls=[0]
+    def snapshot(symbol):
+        if not calls[0]: clock["now"]+=timedelta(seconds=.5)
+        calls[0]+=1
+        fresh={**c,"timestamp":clock["now"].isoformat(),"quote_update_timestamp":clock["now"].isoformat()}
+        return {"ltp":24010,"timestamp":clock["now"].isoformat(),
+                "quote_update_timestamp":clock["now"].isoformat(),"source":"dhan_market_feed"},{c["contract_id"]:fresh}
+    monkeypatch.setattr(e,"_execution_snapshot",snapshot)
+    assert e._execute_offer(offer)
+    assert b.snapshot()["open_positions"]==1
+
+
+def test_entry_scan_checks_feed_quotes_against_time_after_snapshot(tmp_path,monkeypatch):
+    e,b,store,clock=portfolio_account(tmp_path,monkeypatch);s=candidate(clock);c,_=executable(clock)
+    e.market=SimpleNamespace()
+    e.frames["NIFTY"]=frame_fixture()
+    def strategies(frame,now,symbol,structure):
+        if symbol=="NIFTY": clock["now"]+=timedelta(seconds=3)
+        return ([s] if symbol=="NIFTY" else []),[{**STRATEGIES[1],"symbol":symbol,
+            "status":"CANDIDATE" if symbol=="NIFTY" else "WAITING","reason":"Fixture","regime":"TREND_UP"}]
+    monkeypatch.setattr("app.portfolio_engine.evaluate_strategies",strategies)
+    monkeypatch.setattr(e,"_execution_snapshot",lambda symbol:({"ltp":24010,
+        "quote_update_timestamp":clock["now"].isoformat(),"source":"dhan_market_feed"},
+        {c["contract_id"]:{**c,"timestamp":clock["now"].isoformat(),
+             "quote_update_timestamp":clock["now"].isoformat(),"strike_universe":[c["strike"]]}}))
+    seen=[]
+    e.pipeline.last_option_screens=[]
+    monkeypatch.setattr(e.pipeline,"option_candidates",lambda signal,options,*args,**kwargs:seen.extend(options) or [])
+    e.portfolio_cycle()
+    assert seen and e.status["portfolio"]["reason"]=="No eligible opportunity after data, protection, cost and risk checks"
+
+
+def test_changed_option_price_is_repriced_and_can_fill(tmp_path,monkeypatch):
+    e,b,store,clock=portfolio_account(tmp_path,monkeypatch);s=candidate(clock);c,candle=executable(clock)
+    e.protection_results[(s["id"],c["contract_id"])]=dict(candle=candle,generation=0)
+    offer,_=e._prepare_offer(s,c,b.snapshot(),[],clock["now"])
+    e.quotes[c["contract_id"]]={**c,"ask":101,"spread_pct":(101-c["bid"])/101}
+    assert e._execute_offer(offer)
+    position=b.snapshot()["positions"][0]
+    assert position["entry"]==101 and position["risk_rupees"]!=offer["risk"]
+
+
+def test_final_review_uses_new_depth_for_virtual_fill(tmp_path,monkeypatch):
+    e,b,store,clock=portfolio_account(tmp_path,monkeypatch);s=candidate(clock);c,candle=executable(clock)
+    e.protection_results[(s["id"],c["contract_id"])]=dict(candle=candle,generation=0)
+    offer,_=e._prepare_offer(s,c,b.snapshot(),[],clock["now"])
+    e.quotes[c["contract_id"]]=dict(c)
+    original=e._prepare_offer
+    def review(*args):
+        result=original(*args)
+        clock["now"]+=timedelta(seconds=3)
+        e.quotes[c["contract_id"]]={**c,"timestamp":clock["now"].isoformat(),
+            "quote_update_timestamp":clock["now"].isoformat()}
+        return result
+    monkeypatch.setattr(e,"_prepare_offer",review)
+    assert e._execute_offer(offer),e.status["portfolio"]["reviews"].get("NIFTY",{}).get("reason")
+    assert b.snapshot()["positions"][0]["entry"]==100
+
+
+def test_candidate_remains_pending_for_three_completed_bars(tmp_path,monkeypatch):
+    e,b,store,clock=portfolio_account(tmp_path,monkeypatch)
+    s=candidate(clock)
+    e.frames={"NIFTY":frame_fixture()}
+    calls=[([s],[{**STRATEGIES[1],"symbol":"NIFTY","status":"CANDIDATE","reason":"Fixture","last_bar":s["timestamp"]}]),
+           ([],[{**STRATEGIES[1],"symbol":"NIFTY","status":"WAITING","reason":"No new setup","last_bar":s["timestamp"]}])]
+    monkeypatch.setattr("app.portfolio_engine.evaluate_strategies",lambda *args:calls.pop(0) if calls else ([],[{**STRATEGIES[1],"symbol":args[2],"status":"WAITING","reason":"No new setup","last_bar":s["timestamp"]}]))
+    monkeypatch.setattr(e,"_execution_snapshot",lambda symbol:({},{}))
+    e.portfolio_cycle()
+    clock["now"]+=timedelta(minutes=1)
+    e.portfolio_cycle()
+    assert s["id"] in e.pending_signals
+    assert any(o["id"]==s["id"] for o in store.list_records("strategy_opportunities"))
+
+
+def test_specialist_veto_records_exact_warning(tmp_path,monkeypatch):
+    e,b,store,clock=portfolio_account(tmp_path,monkeypatch);s=candidate(clock);c,candle=executable(clock,bid=1)
+    e.protection_results[(s["id"],c["contract_id"])]=dict(candle=candle,generation=0)
+    offer,reason=e._prepare_offer(s,c,b.snapshot(),[],clock["now"])
+    assert offer is None
+    assert "Option screen" in reason and "Spread exceeds midpoint limit" in reason
 
 
 def test_supported_negative_evidence_is_not_overridden(tmp_path,monkeypatch):
@@ -201,7 +295,11 @@ def test_range_target_exit_and_old_session_models_remain_distinct(tmp_path,monke
     e,b,store,clock=portfolio_account(tmp_path,monkeypatch)
     p={"stop":90,"target":120,"option_type":"CALL","invalidation":99,"underlying_target":105}
     assert plan_exit(p,clock["now"],bid=100,underlying=105)=="UNDERLYING_TARGET"
-    assert store.get_record("session_models",str(clock["now"].date())+":"+PORTFOLIO_VERSION)["strategy_version"]==PORTFOLIO_VERSION
+    from app.option_screen import VERSION
+    from app.specialist_agents import VERSION as REVIEW_VERSION
+    from app.risk import SIZING_VERSION
+    frozen=store.get_record("session_models",str(clock["now"].date())+":"+PORTFOLIO_VERSION+":"+VERSION+":"+REVIEW_VERSION+":"+SIZING_VERSION)
+    assert frozen["strategy_version"]==PORTFOLIO_VERSION and frozen["sizing_policy_version"]==SIZING_VERSION
 
 
 def test_session_close_reports_all_six_evaluations_without_network(tmp_path,monkeypatch):
@@ -215,11 +313,11 @@ def test_session_close_reports_all_six_evaluations_without_network(tmp_path,monk
 def test_full_selector_waits_for_exact_protection_then_selects_shared_account(tmp_path,monkeypatch):
     e,b,store,clock=portfolio_account(tmp_path,monkeypatch)
     e.frames={s:frame_fixture() for s in ("NIFTY","SENSEX")}
-    def signals(frame,now,symbol):
+    def signals(frame,now,symbol,structure=None):
         s=candidate(clock,symbol)
         return [s],[{**STRATEGIES[1],"symbol":symbol,"status":"CANDIDATE","reason":"Fixture confirmation","last_bar":s["timestamp"]}]
     monkeypatch.setattr("app.portfolio_engine.evaluate_strategies",signals)
-    for symbol,bid in (("NIFTY",98),("SENSEX",99)):
+    for symbol,bid in (("NIFTY",98.5),("SENSEX",99)):
         c,_=executable(clock,symbol,bid=bid);e.quotes[c["contract_id"]]=c
     e.portfolio_cycle()
     assert b.snapshot()["open_positions"]==0 and len(e.protection_requests)==2

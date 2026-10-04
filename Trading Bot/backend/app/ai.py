@@ -46,7 +46,9 @@ def extract_features(row, signal, contract, now):
 
 
 def scope(trade):
-    return "|".join(str(trade.get(k) or "unknown") for k in ("symbol", "strategy_version", "exit_policy"))
+    identity = "|".join(str(trade.get(k) or "unknown") for k in ("symbol", "strategy_version", "exit_policy"))
+    # Old entry-universe models cannot silently gate a different buying screen.
+    return identity + "".join("|"+trade[key] for key in ("option_screen_version","decision_policy_version") if trade.get(key))
 
 
 TRAINING_GATES = (
@@ -124,19 +126,19 @@ class MLTradeQualityModel:
         self.artifact = artifact
 
     @staticmethod
-    def matrix(features):
-        return np.array([[np.nan if number(f["values"].get(k)) is None else float(f["values"][k]) for k in FEATURES] for f in features])
+    def matrix(features, columns=FEATURES):
+        return np.array([[np.nan if number(f["values"].get(k)) is None else float(f["values"][k]) for k in columns] for f in features])
 
     @classmethod
-    def fit(cls, features, labels):
+    def fit(cls, features, labels, columns=FEATURES):
         from sklearn.linear_model import LogisticRegression
-        x = cls.matrix(features)
-        medians = [float(np.median(x[np.isfinite(x[:, i]), i])) if np.isfinite(x[:, i]).any() else 0. for i in range(len(FEATURES))]
+        x = cls.matrix(features, columns)
+        medians = [float(np.median(x[np.isfinite(x[:, i]), i])) if np.isfinite(x[:, i]).any() else 0. for i in range(len(columns))]
         z = np.concatenate((np.where(np.isnan(x), medians, x), np.isnan(x).astype(float)), axis=1)
         mean, scale = z.mean(axis=0), z.std(axis=0)
         scale[scale == 0] = 1
         model = LogisticRegression(C=.1, max_iter=1000, random_state=17).fit((z-mean)/scale, labels)
-        return cls({"schema": SCHEMA, "features": list(FEATURES), "medians": medians,
+        return cls({"schema": SCHEMA, "features": list(columns), "medians": medians,
                     "mean": mean.tolist(), "scale": scale.tolist(), "coef": model.coef_[0].tolist(),
                     "intercept": float(model.intercept_[0]), "threshold": .55,
                     "algorithm": "regularized_logistic_regression", "label": "completed_net_pnl_positive"})
@@ -147,7 +149,7 @@ class MLTradeQualityModel:
         if sum(number(feature.get("values", {}).get(k)) is not None for k in FEATURES) < 6:
             raise ValueError("Insufficient observed entry features")
         a = self.artifact
-        x = self.matrix([feature])[0]
+        x = self.matrix([feature], a["features"])[0]
         z = np.concatenate((np.where(np.isnan(x), a["medians"], x), np.isnan(x).astype(float)))
         score = float(np.dot((z-np.array(a["mean"]))/a["scale"], a["coef"]) + a["intercept"])
         return 1/(1+math.exp(-max(-700, min(700, score))))

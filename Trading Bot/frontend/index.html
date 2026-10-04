@@ -1,9 +1,19 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#101012" />
+    <meta name="theme-color" content="#080e18" />
+    <style>html{background:#080e18}html[data-theme="light"]{background:#f6f7f9}</style>
+    <script>
+      // Apply the saved terminal theme before the first paint.
+      try {
+        const theme = localStorage.getItem("trading-workspace-theme") === "light" ? "light" : "dark";
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.style.colorScheme = theme;
+        document.querySelector('meta[name="theme-color"]').content = theme === "dark" ? "#080e18" : "#f6f7f9";
+      } catch { document.documentElement.style.colorScheme = "dark"; }
+    </script>
     <title>NIFTY / SENSEX · Paper Trading Workspace</title>
   </head>
   <body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body>

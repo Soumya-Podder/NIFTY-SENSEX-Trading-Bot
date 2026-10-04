@@ -1,8 +1,11 @@
 # Persistent user requirements
 
+- Keep all project-generated data, downloads, logs, caches, and test temporary files under `E:\trading_bot_full`. Set temporary/cache locations there before running tools; do not create project files on C:.
 - Daily paper profit goal is ₹1,000 or more, measured net of estimated charges. This is a target, never a guaranteed daily return.
+- Monthly paper profit target is ₹18,000 net of charges. It is a reporting objective, never an entry requirement or a reason to increase risk.
 - Daily paper loss limit and hard daily halt are ₹1,200. Configure ₹1,000 planned loss allocation plus ₹200 execution reserve in `Trading Bot/.env`; retain the existing per-trade and trade-count limits unless the user changes them.
-- Maximum paper risk per trade is ₹600; the correlated open-risk limit is also ₹600, with the existing one-position cap.
+- Maximum paper risk per trade is ₹650; the correlated open-risk limit is also ₹650, with the existing one-position cap.
+- Multiple lots are permitted for either NIFTY or SENSEX when sizing passes the existing risk and liquidity checks. The combined capital budget across both indices is ₹30,000, not ₹30,000 per index. Aggregate open premium outlay, pending-entry commitments and estimated charge reserves must fit within both this cap and available paper funds. Permission for multiple lots does not raise the ₹650 risk limits or remove the one-position cap.
 
 - Dhan credentials in `Trading Bot/.env` are authoritative. Before diagnosing authentication or using trading data, check for updated credentials and ensure the running REST client and WebSocket have reloaded them. Never print secrets. Do not keep retrying an expired in-memory token when the file contains its replacement.
 - Paper trading must start monitoring at 09:15 IST on market days and request session liquidation at 15:05 IST. Start the service before the session. Opening-range formation and existing entry/risk limits still apply. Never invent a fill to meet a closing deadline when quotes/liquidity are unavailable; show pending exits and keep managing them.

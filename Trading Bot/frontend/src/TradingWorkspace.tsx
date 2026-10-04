@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { decisionReviewView } from "./decisionReview";
+import { MarketEvidence } from "./MarketEvidence";
 type Data = Record<string, any>;
 const cash = (v: any) => typeof v === "number" && Number.isFinite(v) ? v.toLocaleString("en-IN", {style:"currency", currency:"INR", maximumFractionDigits:2}) : "—";
 const percent = (v: any) => typeof v === "number" && Number.isFinite(v) ? `${(v*100).toFixed(2)}%` : "—";
@@ -11,7 +13,7 @@ const STAGE_METADATA: Record<string, { role: string; color: string; rgb: string;
  "Scanner": { role: "Market Scanner", color: "#10b981", rgb: "16, 185, 129", bg: "rgba(16, 185, 129, 0.22)", icon: "scanner" },
  "Regime": { role: "Regime Classifier", color: "#f59e0b", rgb: "245, 158, 11", bg: "rgba(245, 158, 11, 0.22)", icon: "regime" },
  "Setup": { role: "Setup Validator", color: "#8b5cf6", rgb: "139, 92, 246", bg: "rgba(139, 92, 246, 0.22)", icon: "setup" },
- "Confirmation": { role: "Multi-TF Confirmation", color: "#06b6d4", rgb: "6, 182, 212", bg: "rgba(6, 182, 212, 0.22)", icon: "confirmation" },
+ "Confirmation": { role: "Completed-bar Confirmation", color: "#06b6d4", rgb: "6, 182, 212", bg: "rgba(6, 182, 212, 0.22)", icon: "confirmation" },
  "Option Selector": { role: "Strike & Contract Picker", color: "#a855f7", rgb: "168, 85, 247", bg: "rgba(168, 85, 247, 0.22)", icon: "options" },
  "EV": { role: "Expected Value Model", color: "#0ea5e9", rgb: "14, 165, 233", bg: "rgba(14, 165, 233, 0.22)", icon: "ev" },
  "Risk": { role: "Deterministic Sentinel", color: "#f43f5e", rgb: "244, 63, 94", bg: "rgba(244, 63, 94, 0.22)", icon: "risk" },
@@ -79,7 +81,13 @@ export function AgentCanvas({data, online, onDetail}: Data) {
  useEffect(() => {
   const element = viewport.current;
   if (!element) return;
-  const observer = new ResizeObserver(() => setZoom(Math.max(0.5, Math.min(1, (element.clientWidth - 16) / 1340))));
+  let lastWidth = 0;
+  const observer = new ResizeObserver(() => {
+   const width = element.clientWidth;
+   if (width === lastWidth) return;
+   lastWidth = width;
+   setZoom(Math.max(0.5, Math.min(1, (width - 16) / 1340)));
+  });
   observer.observe(element);
   return () => observer.disconnect();
  }, []);
@@ -144,11 +152,10 @@ export function AgentCanvas({data, online, onDetail}: Data) {
  const recordedCount = nodes.filter(n => n.event_id).length;
  const freshCount = nodes.filter(n => n.event_id && eventAge(n.timestamp) <= 120).length;
  const passedCount = nodes.filter(n => /^(PASS|PASSED|FILLED|COMPLETE)$/.test(n.status || "")).length;
- const blockedNode = nodes.find(n => /ERROR|REJECT|BLOCK|INVALID|FAIL/.test(n.status || ""));
- const direction = nodes.find(n => n.agent === "Setup" || n.agent === "Directional Agent")?.evaluation?.direction;
-
- const consensusStance = blockedNode ? "BLOCKED" : direction ? direction.toUpperCase() : passedCount >= 4 ? "CALL_BIAS" : !online ? "OFFLINE" : "WAIT / MONITOR";
- const consensusColor = consensusStance === "CALL" || consensusStance === "CALL_BIAS" ? "#10b981" : consensusStance === "PUT" ? "#f43f5e" : consensusStance === "BLOCKED" ? "#ef4444" : "#ec4899";
+ const decisionView = decisionReviewView(data, symbol, online);
+ const review = decisionView.review;
+ const consensusStance = decisionView.stance;
+ const consensusColor = consensusStance === "CALL" ? "#10b981" : consensusStance === "PUT" ? "#f43f5e" : consensusStance === "BLOCKED" ? "#ef4444" : "#ec4899";
 
  const chainMessage = !online ? "Disconnected · last received state" :
   recordedCount === 0 ? "No decision events recorded" :
@@ -165,14 +172,14 @@ export function AgentCanvas({data, online, onDetail}: Data) {
  const routes = [
   ["Regime Agent", "Directional Agent · Setup", "Classifies market state before a setup is considered", "#f59e0b", "245, 158, 11"],
   ["Directional Agent", "Orchestrator", "Passes directional evidence and invalidation levels", "#8b5cf6", "139, 92, 246"],
-  ["Options Flow Agent", "Gamma · Theta · IV", "Shares OI, migration and premium context", "#a855f7", "168, 85, 247"],
-  ["Gamma Agent", "Orchestrator", "Reports convexity, concentration and asymmetric risk", "#ec4899", "236, 72, 153"],
-  ["Theta Agent", "Orchestrator", "Checks decay-adjusted reward versus premium paid", "#06b6d4", "6, 182, 212"],
-  ["IV Agent", "Orchestrator", "Checks volatility regime, skew and premium expansion", "#0ea5e9", "14, 165, 233"],
+  ["Options Flow Agent", "Gamma · Theta · IV", "Observes unsigned OI and volume; no institutional-flow inference", "#a855f7", "168, 85, 247"],
+  ["Gamma Agent", "Orchestrator", "Observes fresh contract gamma; dealer positioning is unavailable", "#ec4899", "236, 72, 153"],
+  ["Theta Agent", "Orchestrator", "Requires documented daily Theta units for decay percentages", "#06b6d4", "6, 182, 212"],
+  ["IV Agent", "Orchestrator", "Observes fresh IV; historical percentile is unavailable", "#0ea5e9", "14, 165, 233"],
   ["Liquidity Agent", "Risk Sentinel", "Supplies spread, depth and slippage evidence", "#10b981", "16, 185, 129"],
-  ["Momentum Agent", "Orchestrator", "Confirms acceleration across observed timeframes", "#3b82f6", "59, 130, 246"],
+  ["Momentum Agent", "Orchestrator", "Checks completed-bar ADX, EMA alignment and slope", "#3b82f6", "59, 130, 246"],
   ["Structure Agent", "Setup", "Supplies VWAP, EMA and opening-structure context", "#6366f1", "99, 102, 241"],
-  ["News/Event Agent", "Adversarial Agent", "Publishes timestamped event risk and severity", "#f97316", "249, 115, 22"],
+  ["News/Event Agent", "Adversarial Agent", "Validated timestamped event feed is not connected", "#f97316", "249, 115, 22"],
   ["Adversarial Agent", "Orchestrator", "Challenges every proposed trade and invalidation", "#ef4444", "239, 68, 68"],
   ["Loss Investigator", "Research journal", "Classifies closed losses for later research", "#eab308", "234, 179, 8"],
   ["Risk Sentinel", "Paper execution", "Applies deterministic risk, session and halt vetoes", "#f43f5e", "244, 63, 94"],
@@ -185,17 +192,18 @@ export function AgentCanvas({data, online, onDetail}: Data) {
   onDetail({
    agent: "Central Orchestrator Core",
    symbol,
-   status: blockedNode ? "BLOCKED_BY_GATE" : online ? (chainFresh ? "CONSENSUS_ACTIVE" : "AWAITING_CYCLE") : "OFFLINE",
-   label: "Multi-agent consensus engine synthesizing 14 specialist roles into deterministic action gates.",
-   telemetry_current: Boolean(online),
-   timestamp: lastObserved,
+   status: consensusStance,
+   label: decisionView.reason,
+   telemetry_current: decisionView.fresh,
+   timestamp: review?.evaluated_at,
+   decision_review: review,
    consensus: {
     stance: consensusStance,
     passed_gates: `${passedCount} of 8 stages passed`,
     fresh_stages: `${freshCount} of 8 stages active (<120s)`,
-    blocked_by: blockedNode ? `${blockedNode.agent}: ${blockedNode.status}` : "None (all active gates cleared)",
-    direction_signal: direction || "Awaiting directional bias",
-    active_specialist_roles: 14,
+    blocked_by: review?.reason || "No coordinator review recorded",
+    direction_signal: review?.decision || "WAIT",
+    evaluated_specialist_roles: decisionView.evaluated,
    },
    specialist_audit_summary: routes.map(([from, to, role]) => {
     const a = auditById.get(from) as Data | undefined;
@@ -211,23 +219,26 @@ export function AgentCanvas({data, online, onDetail}: Data) {
    <div className="workspace-toolbar modern-toolbar">
     <div>
      <div className="eyebrow modern-eyebrow">
-      <span className="eyebrow-dot" /> AGENTIC WORKSPACE · MULTI-AGENT TRADING INTELLIGENCE
+      <span className="eyebrow-dot" /> CURRENT DECISION
      </div>
-     <h2 className="modern-title">Autonomous Decision Workflow</h2>
-     <p className="modern-subtitle">Deterministic 8-stage pipeline coordinated by Central Orchestrator & 14 specialist roles</p>
+     <h2 className="modern-title">Decision workflow</h2>
+     <p className="modern-subtitle">Select an agent to inspect its evidence.</p>
     </div>
-    <div className="workspace-actions">
-     <div className="segmented modern-segmented">
+    <div className="workspace-actions workflow-controls">
+     <div className="workflow-index-switch" role="group" aria-label="Workflow index">
+      <span className="control-caption">Index</span>
       {["NIFTY", "SENSEX"].map(s => (
-       <button key={s} className={symbol === s ? "selected" : ""} onClick={() => setSymbol(s)}>
+       <button key={s} aria-pressed={symbol === s} onClick={() => setSymbol(s)}>
         {s}
        </button>
       ))}
      </div>
-     <div className="zoom-group">
-      <button aria-label="Zoom out workflow" onClick={() => setZoom(z => Math.max(0.5, z - 0.1))}>−</button>
-      <button onClick={() => setZoom(1)} title="Reset zoom">{Math.round(zoom * 100)}%</button>
-      <button aria-label="Zoom in workflow" onClick={() => setZoom(z => Math.min(1.5, z + 0.1))}>+</button>
+     <div className="zoom-group" role="group" aria-label="Workflow zoom">
+      <span className="control-caption">Zoom</span>
+      <button aria-label="Zoom out workflow" disabled={zoom <= 0.5} onClick={() => setZoom(z => Math.max(0.5, z - 0.1))}>−</button>
+      <output aria-label="Current workflow zoom">{Math.round(zoom * 100)}%</output>
+      <button aria-label="Zoom in workflow" disabled={zoom >= 1.5} onClick={() => setZoom(z => Math.min(1.5, z + 0.1))}>+</button>
+      <button onClick={() => setZoom(1)} aria-label="Reset workflow zoom to 100%" title="Reset diagram to its original size (100%)">Reset</button>
      </div>
     </div>
    </div>
@@ -246,33 +257,6 @@ export function AgentCanvas({data, online, onDetail}: Data) {
      <span className={`monitor-heartbeat ${monitorPulse ? "is-live" : ""}`}>
       <i /> {monitorPulse ? "Engine heartbeat live (2s)" : "Telemetry snapshot"}
      </span>
-    </div>
-   </div>
-
-   {/* Agent Handoff Bus */}
-   <div className="handoff-bus modern-handoff-bus" aria-label={`${handoffs.length} recorded agent handoffs`}>
-    <div className="handoff-bus-title">
-     <div className="bus-tag">
-      <span className="bus-pulse-indicator" />
-      <span>AGENT HANDOFF BUS</span>
-     </div>
-     <small>{chainFresh ? "Streaming recorded evidence" : "Replay tape · awaiting fresh cycle"}</small>
-    </div>
-    <div className="handoff-track">
-     {handoffs.length ? handoffs.map((event: Data, index: number) => {
-      const fresh = eventAge(event.timestamp) <= 120;
-      return (
-       <div key={event.id || `${event.agent}-${index}`} className={`handoff-chip modern-chip ${fresh ? "is-fresh" : "is-stale"}`}>
-        <span className="handoff-dot" />
-        <strong>{event.agent || "Agent"}</strong>
-        <b className="handoff-arrow">→</b>
-        <span className={`handoff-status ${tone(event.status || "")}`}>{event.status || "WAITING"}</span>
-        <small>{event.summary || "Recorded decision evidence"}</small>
-       </div>
-      );
-     }) : (
-      <div className="handoff-empty">No recorded handoffs for {symbol}; the workflow is waiting for the next completed market cycle.</div>
-     )}
     </div>
    </div>
 
@@ -559,7 +543,7 @@ export function AgentCanvas({data, online, onDetail}: Data) {
          </div>
 
          {/* Middle: Evaluated Description */}
-         <p className="stage-label-text">{n.label || "Waiting for engine telemetry"}</p>
+         {n.label && !["Awaiting event", "Waiting for engine telemetry", data?.market?.session, n.status].includes(n.label) && <p className="stage-label-text">{n.label}</p>}
 
          {/* Bottom: Status Pill + Timestamp / Inspect */}
          <div className="stage-footer">
@@ -592,13 +576,13 @@ export function AgentCanvas({data, online, onDetail}: Data) {
        <div className="orchestrator-inner-content">
         <div className="orch-badge-row">
          <span className="orch-glow-dot" />
-         <span className="orch-title-tag">ORCHESTRATOR CONSENSUS CORE</span>
-         <span className="orch-inspect-link">Audit Consensus ↗</span>
+         <span className="orch-title-tag">COORDINATOR REVIEW</span>
+         <span className="orch-inspect-link">Inspect evidence ↗</span>
         </div>
 
         <div className="orch-main-readout">
          <div className="orch-stance-box">
-          <small className="orch-stance-label">CONSENSUS STANCE</small>
+          <small className="orch-stance-label">PAPER CANDIDATE / STATE</small>
           <strong className="orch-stance-val" style={{ color: consensusColor, textShadow: `0 0 20px ${consensusColor}` }}>
            {consensusStance}
           </strong>
@@ -606,14 +590,14 @@ export function AgentCanvas({data, online, onDetail}: Data) {
 
          <div className="orch-meter-box">
           <div className="orch-meter-label">
-           <span>Pipeline Gate Clearance</span>
-           <strong style={{ color: "#ec4899" }}>{passedCount}/8 Passed</strong>
+           <span>Recorded review checks</span>
+           <strong style={{ color: "#ec4899" }}>{decisionView.passed}/{decisionView.checks.length} Passed</strong>
           </div>
           <div className="orch-meter-track">
            <div
             className="orch-meter-fill"
             style={{
-             width: `${(passedCount / 8) * 100}%`,
+             width: `${decisionView.checks.length ? decisionView.passed / decisionView.checks.length * 100 : 0}%`,
              background: `linear-gradient(90deg, #ec4899, #a855f7, ${consensusColor})`,
              boxShadow: `0 0 14px ${consensusColor}`
             }}
@@ -623,10 +607,10 @@ export function AgentCanvas({data, online, onDetail}: Data) {
         </div>
 
         <div className="orch-footer-note">
-         <span>14 specialist roles synthesized</span>
+         <span>{decisionView.evaluated}/{decisionView.total} roles evaluated</span>
          <span className="orch-dot-sep">·</span>
          <span className={chainFresh ? "orch-fresh" : "orch-waiting"}>
-          {chainFresh ? `${freshCount}/8 stages with live telemetry` : "Awaiting market cycle"}
+          {review?.phase || "Awaiting market cycle"} · {review?.unavailable_context?.length || 0} unavailable inputs
          </span>
         </div>
        </div>
@@ -634,28 +618,23 @@ export function AgentCanvas({data, online, onDetail}: Data) {
 
       {/* Modern Footnote positioned cleanly below all cards */}
       <div className="workflow-footnote modern-footnote">
-       Packets stream live handoff events from the past 2 minutes · Click any stage or the Central Orchestrator to inspect recorded audit evidence.
+       Paper execution requires risk approval. Waiting stages have not passed.
       </div>
      </div>
     </div>
    </div>
 
+   <MarketEvidence estimate={data?.engine?.outcome_estimates?.[symbol]} />
    {/* How the agents communicate (14 specialist roles) */}
-   <div className="communication-panel modern-comm-panel">
-    <div className="communication-heading">
-     <div>
-      <div className="eyebrow modern-eyebrow">ARCHITECTURE BUS · RECORDED TELEMETRY</div>
-      <h3 className="modern-comm-title">Specialist Agent Architecture & Consensus Bus</h3>
-     </div>
-     <span className="comm-header-sub">14 specialized roles · Central consensus engine · Deterministic risk gate</span>
-    </div>
-
+   <details className="communication-panel modern-comm-panel workspace-disclosure">
+    <summary>Specialist evidence</summary>
     <div className="communication-grid modern-comm-grid">
      {routes.map(([from, to, role, roleColor, roleRgb]) => {
       const agent = auditById.get(from) as Data | undefined;
-      const observed = Boolean(agent?.last_evidence_at);
-      const fresh = Boolean(observed && eventAge(agent.last_evidence_at) <= 120);
-      const state = agent?.status || "NO_EVIDENCE";
+      const evidence = review?.agents?.[from];
+      const observed = Boolean(evidence?.evaluated_at);
+      const fresh = Boolean(decisionView.fresh && observed && eventAge(evidence.evaluated_at) <= 120);
+      const state = !decisionView.fresh ? "NO_CURRENT_REVIEW" : evidence?.status || "NOT_EVALUATED";
 
       return (
        <article
@@ -671,7 +650,8 @@ export function AgentCanvas({data, online, onDetail}: Data) {
          <strong>{from}</strong>
          <small>{state.replaceAll("_", " ")}</small>
         </div>
-        <p>{role}</p>
+        <p>{evidence?.task || role}</p>
+        <button className="link-button" onClick={()=>onDetail({agent:from,symbol,status:state,evaluation:evidence,learning_audit:agent})}>Inspect evidence ↗</button>
         <div className="communication-route">
          <b aria-hidden="true"><i /></b>
          <strong>{to}</strong>
@@ -687,9 +667,9 @@ export function AgentCanvas({data, online, onDetail}: Data) {
     </div>
 
     <p className="communication-note">
-     Routes define the immutable multi-agent contract. Status, decision counts, and timestamps derive from the live telemetry audit stream. A route reflects consensus participation, never an unverified fill.
+     Status comes from the selected index's latest coordinator review. Historical decision counts are separate from current availability. Context observations are not directional votes; Risk Sentinel remains final.
     </p>
-   </div>
+   </details>
   </section>
  );
 }
@@ -733,14 +713,21 @@ export function BacktestOverview({report:r,onDetail}: Data) {
  const bounds=(rows:Data[])=>rows.reduce<[number,number]>(([lo,hi],p)=>[Math.min(lo,p.value),Math.max(hi,p.value)],[Infinity,-Infinity]);
  const points=(rows:Data[])=>{const [lo,hi]=bounds(rows);return rows.map((p,i)=>`${60+i/Math.max(1,rows.length-1)*900},${260-(p.value-lo)/Math.max(hi-lo,1)*220}`).join(" ");};
  const summary=[["Initial capital",cash(capital)],[`Final capital · ${basis}`,cash(final)],[`${basis} return`,capital>0 ? percent(amount==null ? null : amount/capital):"—"],["Winning trades",number(m.wins)],["Losing trades",number(m.losses)],["Average winner",cash(m.average_winner)],["Average loser",cash(m.average_loser)],["Largest winner",cash(m.largest_winner)],["Largest loser",cash(m.largest_loser)],["Estimated charges",cash(netMetrics.total_charges)],["Observed sessions",number(netMetrics.sessions)]];
- return <section className="results-workspace panel spaced"><div className="workspace-toolbar"><div><div className="eyebrow">BACKTEST RESULTS / {r.quality || "UNAVAILABLE"}</div><h2>{r.strategy_version || r.strategy_mode || "Strategy report"}</h2><p>{r.config?.from || "Start unavailable"} → {r.config?.to || "End unavailable"} · Capital {cash(capital)}</p></div><div className="segmented">{["net","gross"].map(b=><button key={b} className={basis===b ? "selected" : ""} onClick={()=>setBasis(b)}>{b==="net" ? "Net view" : "Gross view"}</button>)}</div></div>
+ return <section className="results-workspace panel spaced"><div className="workspace-toolbar"><div><div className="eyebrow">BACKTEST RESULTS / {r.quality || "UNAVAILABLE"}</div><h2>{r.strategy_version || r.strategy_mode || "Strategy report"}</h2></div><div className="segmented">{["net","gross"].map(b=><button key={b} className={basis===b ? "selected" : ""} onClick={()=>setBasis(b)}>{b==="net" ? "Net view" : "Gross view"}</button>)}</div></div>
  <div className="report-evidence">
   <strong>{r.presentation?.evidence_label || r.quality} · {ok ? (r.quality === "estimated_scenario" ? "Completed exploratory scenario" : "Completed observed replay") : "Performance not established"}</strong>
   <p>Requested: {r.config?.requested_from || r.config?.from} → {r.config?.to}. Observed: {r.presentation?.observed_from || r.daily?.[0]?.date || "unavailable"} → {r.presentation?.observed_to || r.daily?.[r.daily.length-1]?.date || "unavailable"} · {r.presentation?.observed_sessions ?? r.daily?.length ?? 0} sessions.</p>
   {r.config?.range_note && <p>{r.config.range_note}</p>}
+  {r.option_screen_validation && <p><strong>{r.option_screen_validation.requested === "legacy" ? "Legacy screen comparison" : "Current screen research"}.</strong> {r.option_screen_validation.reason} · Target {cash(r.metrics?.monthly_target)} {r.metrics?.monthly_target_basis || "basis unavailable"} per month.</p>}
   {r.estimation && <div><strong>EXPLORATORY ESTIMATES · NOT HISTORICAL PERFORMANCE</strong><p>{r.estimation.estimated_exits} estimated exits · {percent(r.estimation.haircut)} reduction from the preceding observed premium. The entire account path is excluded from learning.</p><button className="ghost-button" onClick={()=>onDetail({estimation:r.estimation,assumptions:r.assumptions})}>Inspect estimated exits ↗</button></div>}
   {(r.presentation?.blockers || []).map((s:string)=><p className="negative" key={s}>{s}</p>)}
   <p>Current scope: {r.presentation?.strategy_scope || r.strategy_version || "Saved strategy"}. This report does not establish performance for every portfolio strategy.</p>
+  {ok && <p>Realised payoff ratio: {number(m.realized_payoff_ratio)} · Break-even win rate at observed average payoffs: {percent(m.breakeven_win_rate)}. Descriptive sample statistics, not a next-trade probability.</p>}
+  {r.exit_analysis?.groups?.length > 0 && <details><summary>Completed exits · {r.exit_analysis.basis} results</summary>
+   <div className="table-wrap"><table><thead><tr><th>Exit reason</th><th>Trades</th><th>P&amp;L</th><th>Average P&amp;L</th><th>Average minutes held</th></tr></thead><tbody>
+    {r.exit_analysis.groups.map((e:Data)=><tr key={e.reason}><td>{e.reason}</td><td>{e.trades}</td><td>{cash(e.pnl)}</td><td>{cash(e.average_pnl)}</td><td>{number(e.average_holding_minutes)}</td></tr>)}
+   </tbody></table></div><p>{r.exit_analysis.note}</p>
+  </details>}
  </div>
  <div className="results-columns"><div className="results-main"><div className="summary-strip">{[[`${basis} P&L`,cash(amount)],["Profit factor",number(m.profit_factor)],["Total trades",number(m.trades)],["Win rate",percent(m.win_rate)],["Max drawdown",cash(m.max_drawdown)]].map(([k,v])=><div key={k}><small>{k}</small><strong>{v}</strong></div>)}</div>
  <div className="workspace-toolbar"><h3>Performance chart</h3><div className="segmented"><button className={year==="all" ? "selected" : ""} onClick={()=>setYear("all")}>Full run</button>{years.map(y=><button className={year===y ? "selected" : ""} key={y} onClick={()=>setYear(y)}>{y}</button>)}</div></div>

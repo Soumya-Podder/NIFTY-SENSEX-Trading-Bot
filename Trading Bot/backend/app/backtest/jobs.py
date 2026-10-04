@@ -7,12 +7,12 @@ import math
 import pandas as pd
 from .data import dataset_path, read_contract_csv
 from .reconstruction import dhan_research,dhan_plan_research
-from .engine import BacktestConfig, BacktestEngine
+from .engine import BacktestEngine
 from .reports import report_from_run
 from .walk_forward import validation_windows
 from ..telemetry.agent_metrics import learn_from_outcomes
 from ..market_data import HISTORY_CACHE_ONLY
-from ..risk import PlanRiskPolicy
+from .configuration import resolve_backtest_budgets, build_replay_config
 from ..ai import LearningService
 from .strategy_signals import MODES
 
@@ -104,17 +104,6 @@ def archive_manifest(job_id, config, counts, completed_at):
     }
 
 
-def resolve_backtest_budgets(config,settings):
-    result=dict(config)
-    result.setdefault("capital",settings.paper_capital)
-    result.setdefault("risk_per_trade",settings.max_trade_risk_rupees)
-    for key,base in (("daily_loss_limit",settings.daily_loss_limit_rupees),("correlated_risk_limit",settings.max_correlated_risk_rupees)):
-        if result.get(key) is None: result[key]=result["risk_per_trade"]*(base/settings.max_trade_risk_rupees)
-    for key in ("capital","risk_per_trade","daily_loss_limit","correlated_risk_limit"):
-        if not math.isfinite(result[key]) or result[key]<=0: raise ValueError(f"{key} must resolve to a positive finite number")
-    return result
-
-
 class BacktestJobs:
     def __init__(self,store,gateway,settings,data_dir):
         self.store=store; self.gateway=gateway; self.settings=settings; self.data_dir=data_dir
@@ -133,10 +122,14 @@ class BacktestJobs:
             strategy_mode=config.get("strategy_mode")
             if config.get("estimate_missing_exits") and config.get("source")!="dhan":
                 raise ValueError("Estimated exit scenarios currently support Dhan rolling research only")
-            if strategy_mode is not None and strategy_mode not in MODES:
-                raise ValueError("Unknown strategy replay mode")
-            if strategy_mode and config.get("source")!="csv":
-                raise ValueError("Individual/portfolio replay requires observed exact-contract CSV data; rolling Dhan research does not yet provide equivalent execution inputs")
+            if strategy_mode == "autonomous":
+                if config.get("source") != "observed":
+                    raise ValueError("Autonomous replay requires archived quote and API observations")
+            else:
+                if strategy_mode is not None and strategy_mode not in MODES:
+                    raise ValueError("Unknown strategy replay mode")
+                if strategy_mode and config.get("source")!="csv":
+                    raise ValueError("Individual/portfolio replay requires observed exact-contract CSV data; rolling Dhan research does not yet provide equivalent execution inputs")
             config=resolve_backtest_budgets(config,self.settings)
             self.cancel_event=threading.Event()
             self.finalizing=False
@@ -192,29 +185,26 @@ class BacktestJobs:
                     message=f"Download pass finished: {counts['nonempty_responses']} populated responses; {counts['empty_responses']} empty responses (not verified coverage). Cached data retained; no strategy or learning executed.")
                 return
             replay=None; windows=None; dataset_id=None; ml_replay=None
+            if config.get("strategy_mode")=="autonomous":
+                from .autonomous_replay import run_replay
+                updates={"paper_capital":config["capital"],"max_trade_risk_rupees":config["risk_per_trade"]}
+                replay_settings=self.settings.model_copy(update=updates)
+                report=run_replay(store=self.store,gateway=self.gateway,settings=replay_settings,data_dir=self.data_dir,
+                    start=config["from"],end=config["to"],cancel=cancelled,progress=progress,symbols=config["symbols"])
+                report.update(run_id=identifier,created_at=datetime.now(timezone.utc).isoformat())
+                with self.lock:
+                    if cancelled(): raise InterruptedError("Cancelled")
+                    job=self.store.get_record("jobs",identifier)
+                    job.update(status=report["status"],progress=100,message="Autonomous observed-input replay saved",report_id=identifier)
+                    self.store.save_bundle([("reports",identifier,report),("jobs",identifier,job),("backtest","latest",{"report_id":identifier})])
+                return
             if config["source"]=="dhan":
                 if not self.settings.dhan_client_id or not self.settings.dhan_access_token: raise ValueError("Dhan credentials are not configured")
                 result=dhan_research(self.gateway,config,progress,cancelled,self.settings)
             else:
                 path=dataset_path(self.data_dir,config["dataset"])
+                cfg,config=build_replay_config(self.settings,config)
                 frame,dataset_id=read_contract_csv(path,config,cancelled)
-                cfg=BacktestConfig(initial_capital=config["capital"],risk_per_trade=config["risk_per_trade"],
-                    daily_loss_limit=config.get("daily_loss_limit",self.settings.daily_loss_limit_rupees),correlated_risk_limit=config.get("correlated_risk_limit",self.settings.max_correlated_risk_rupees),
-                    max_positions=self.settings.max_open_positions,monthly_target=self.settings.monthly_profit_target,
-                    entry_cutoff=self.settings.entry_cutoff,exit_at=self.settings.session_exit,adaptive_exits=bool(config.get("strategy_mode")),
-                    horizon_minutes=10,min_stop=0.0,invalidation_buffer=0.0,strategy_mode=config.get("strategy_mode"))
-                if config.get("strategy_version")=="orb-retest-v1" or cfg.strategy_mode:
-                    # Research inputs are editable; do not cap them to the paper
-                    # account. Preserve the declared allocation/reserve ratios.
-                    base=PlanRiskPolicy.from_settings(self.settings)
-                    ratio=config["daily_loss_limit"]/(base.loss_allocation+base.emergency_reserve)
-                    plan=replace(base,trade_risk=config["risk_per_trade"],loss_allocation=base.loss_allocation*ratio,
-                        emergency_reserve=base.emergency_reserve*ratio,
-                        premium_limit=config["capital"]*(base.premium_limit/self.settings.paper_capital),
-                        cash_reserve=config["capital"]*(base.cash_reserve/self.settings.paper_capital),
-                        weekly_loss=base.weekly_loss*ratio,
-                        max_drawdown=base.max_drawdown*ratio)
-                    cfg=replace(cfg,plan_policy=plan,max_positions=1,cooldown_bars=plan.cooldown_minutes)
                 # Frozen base rules for historical reporting; today's learned policies would leak future outcomes.
                 result=BacktestEngine(cfg).run(frame,cancelled,lambda n,total:progress("Replaying shared-capital portfolio",n,total))
                 dates=sorted(set(frame.timestamp.dt.strftime("%Y-%m-%d")))
@@ -248,8 +238,9 @@ class BacktestJobs:
                 if cancelled(): raise InterruptedError("Cancelled")
                 job=self.store.get_record("jobs",identifier)
                 job.update(status=report["status"],progress=100,message="Report saved",report_id=identifier)
+                from ..outcome_evidence import evidence_records
                 self.store.save_bundle([("reports",identifier,report),("jobs",identifier,job),
-                    ("backtest","latest",{"report_id":identifier})])
+                    ("backtest","latest",{"report_id":identifier}),*evidence_records(report)])
             try:
                 learning=({"status":"EXCLUDED_ESTIMATED_SCENARIO","reason":"Estimated account paths cannot train or promote models"} if config.get("estimate_missing_exits") else LearningService(self.store).train(report,identifier,replay=ml_replay))
                 report["ml_learning"]=learning

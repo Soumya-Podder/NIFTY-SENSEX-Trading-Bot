@@ -17,6 +17,7 @@ HISTORY_CACHE_ONLY=ContextVar("history_cache_only",default=False)
 from .telemetry.decision_trace import event
 from .telemetry.event_bus import event_bus
 from .session import local_time,now_ist,quote_is_fresh,session_state
+from .dhan_observations import compare_chains
 
 
 def exchange_timestamp(value):
@@ -96,6 +97,13 @@ class DhanMarketData:
 
     def executable_quotes(self):
         with self.lock: return {k:dict(v) for k,v in self.option_quotes.items()}
+
+    def execution_snapshot(self, symbol):
+        """Return the underlying and its option books from one locked observation."""
+        with self.lock:
+            return {"observed_at":datetime.now(timezone.utc).isoformat(),
+                    "underlying":dict(self.latest.get(symbol,{})),
+                    "options":{k:dict(v) for k,v in self.option_quotes.items() if v.get("symbol")==symbol}}
 
     @property
     def configured(self) -> bool:
@@ -237,9 +245,14 @@ class DhanMarketData:
                 quote={**contract,"timestamp":received,"quote_update_timestamp":received,
                     "exchange_timestamp":exchange_timestamp(packet.get("LTT")),"last_trade_timestamp":exchange_timestamp(packet.get("LTT")),
                     "source":"dhan_market_feed_depth","credential_generation":self.credential_generation,
+                    "packet_type":packet.get("type"),"sequence":packet.get("sequence") or packet.get("seq"),
+                    "exchange_segment":packet.get("exchange_segment"),"raw_exchange_timestamp":packet.get("LTT"),
+                    "depth":depth,
                     "bid":float(bid.get("bid_price",0)),"bid_qty":int(bid.get("bid_quantity",0)),
                     "ask":float(ask.get("ask_price",0)),"ask_qty":int(ask.get("ask_quantity",0)),
-                    "ltp":float(packet.get("LTP",0)),"volume":packet.get("volume"),"oi":packet.get("OI")}
+                    "ltp":float(packet.get("LTP",0)),
+                    "volume":packet.get("volume") if packet.get("volume") is not None else contract.get("volume"),
+                    "oi":packet.get("OI") if packet.get("OI") is not None else contract.get("oi")}
                 if self.recorder: quote["observation_id"]=self.recorder.record("option_depth",quote,self.credential_generation)
                 with self.lock: self.option_quotes[contract["contract_id"]]=quote
                 with self.lock:
@@ -253,6 +266,8 @@ class DhanMarketData:
             close = float(packet["close"]) if packet.get("close") not in (None, "") else None
             tick = {"symbol": symbol, "security_id": security_id,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "packet_type":packet.get("type"),"sequence":packet.get("sequence") or packet.get("seq"),
+                    "exchange_segment":packet.get("exchange_segment"),"raw_exchange_timestamp":packet.get("LTT"),
                     "ltp": ltp,
                     "open": packet.get("open"), "high": packet.get("high"), "low": packet.get("low"),
                     "close": close, "volume": packet.get("volume"), "oi": packet.get("OI"),
@@ -301,6 +316,7 @@ class DhanMarketData:
 class DhanGateway:
     """One rate-limited, cached data adapter shared by paper and research."""
     def __init__(self,settings,store,credential_provider=None):
+        self.response_recorder=None
         from dhanhq import DhanContext,dhanhq
         self.settings=settings; self.store=store
         self.client=dhanhq(DhanContext(settings.dhan_client_id,settings.dhan_access_token))
@@ -407,10 +423,28 @@ class DhanGateway:
                 delay={"data":.25,"quote":1.05,"chain":3.1}[kind]-(time.monotonic()-self.last[kind])
                 if delay>0: time.sleep(delay)
                 try:
-                    result=self.unwrap(method(*args))
+                    try:
+                        result=self.unwrap(method(*args))
+                    except Exception:
+                        self._record_response(method.__name__,args,None,generation,now_ist().isoformat(),"REQUEST_FAILED")
+                        raise
+                    received_at=now_ist().isoformat()
                     self.refresh_credentials()
                     if generation!=getattr(self,"credential_generation",0):
+                        self._record_response(method.__name__,args,None,generation,received_at,"CREDENTIAL_CHANGED_DISCARDED")
                         raise RuntimeError("Credentials changed during request; discard old response and retry")
+                    capture_id=self._record_response(method.__name__,args,result,generation,received_at)
+                    if method.__name__ == "option_chain" and isinstance(result,dict):
+                        # Cache the original receipt time with the data. A cache
+                        # hit must not make old OI/IV appear newly observed.
+                        request_key=hashlib.sha256(json.dumps(args,sort_keys=True,default=str).encode()).hexdigest()
+                        previous_key=f"chain_observation:{generation}:{request_key}"
+                        previous=self.store.cache_get(previous_key,include_expired=True)
+                        result={**result,"_observed_at":received_at,"_api_capture_id":capture_id,"_request_key":request_key}
+                        comparison=compare_chains(result,previous)
+                        # Store the baseline without nesting previous comparisons.
+                        self.store.cache_put(previous_key,result,-1)
+                        result["_comparison"]=comparison
                     self.last[kind]=time.monotonic()
                     if cache_seconds:
                         if cache_seconds>=0:
@@ -421,6 +455,17 @@ class DhanGateway:
                     self.last[kind]=time.monotonic()
                     if attempt==2: raise
                     time.sleep(2**attempt)
+
+    def _record_response(self,method,args,result,generation,received_at,outcome="SUCCESS"):
+        recorder=getattr(self,"response_recorder",None)
+        if recorder is None: return None
+        try:
+            return recorder.record_response(method,args,result,generation,received_at,outcome=outcome)
+        except Exception:
+            # Research storage must never interrupt position protection.
+            with recorder.lock:
+                recorder.error="CAPTURE_FAILED"; recorder.dropped+=1; recorder.last_drop=received_at
+            return None
 
     def master(self):
         day=str(now_ist().date())
@@ -463,7 +508,7 @@ class DhanGateway:
                            "metadata_observed_on":str(now_ist().date())})
         return result
 
-    def chain(self,symbol,exclude_expiry_day=False):
+    def chain(self,symbol,exclude_expiry_day=False,include_atm=False):
         under=next(x for x in self.underlyings() if x["symbol"]==symbol)
         expiries=self.call(self.client.expiry_list,int(under["security_id"]),"IDX_I",cache_seconds=3600)
         if isinstance(expiries,dict): expiries=expiries.get("data",[])
@@ -473,29 +518,68 @@ class DhanGateway:
         expiry=valid[0]
         chain=self.call(self.client.option_chain,int(under["security_id"]),"IDX_I",expiry,kind="chain",cache_seconds=30)
         master={x["security_id"]:x for x in self.contracts(symbol) if x["expiry"]==expiry}
-        received=now_ist().isoformat()
+        received=chain.get("_observed_at")
         spot=float(chain.get("last_price",0))
         strikes=[float(k) for k in chain.get("oc",{})]
         if not strikes or spot<=0: return []
         atm=min(strikes,key=lambda v:abs(v-spot)); result=[]; records=[]
         for strike,legs in chain["oc"].items():
-            if float(strike)==atm: continue
+            if float(strike)==atm and not include_atm: continue
             for key in ("ce","pe"):
                 leg=legs.get(key) or {}; sid=str(leg.get("security_id",""))
                 contract=master.get(sid)
                 if not contract: continue
                 greeks=leg.get("greeks") or {}
                 row={**contract,"spot":spot,"ltp":leg.get("last_price"),"oi":leg.get("oi"),
+                     "previous_oi":leg.get("previous_oi"),"chain_observed_at":received,
+                     "previous_volume":leg.get("previous_volume"),"previous_close_price":leg.get("previous_close_price"),
+                     "average_price":leg.get("average_price"),"chain_bid":leg.get("top_bid_price"),
+                     "chain_ask":leg.get("top_ask_price"),"chain_bid_qty":leg.get("top_bid_quantity"),
+                     "chain_ask_qty":leg.get("top_ask_quantity"),"api_response_id":chain.get("_api_capture_id"),
+                     "observation_change":{**{k:v for k,v in chain.get("_comparison",{}).items() if k!="contracts"},
+                         "contract":chain.get("_comparison",{}).get("contracts",{}).get(sid)},
                      "volume":leg.get("volume"),"iv":leg.get("implied_volatility"),
                      "delta":greeks.get("delta"),"gamma":greeks.get("gamma"),
                      "theta":greeks.get("theta"),"vega":greeks.get("vega"),
                      "greeks_source":"dhan_option_chain",
-                     "greeks_observed_at":received,"is_atm":False,"strike_universe":strikes}
+                     "greek_units":{"delta":"premium_per_index_point","gamma":"premium_per_index_point_squared",
+                                    "vega":"premium_per_iv_percentage_point"},
+                     "greeks_observed_at":received,"is_atm":float(strike)==atm,"strike_universe":strikes}
                 records.extend([("contracts",row["contract_id"],contract),
                     ("contract_metadata",contract["metadata_observed_on"]+":"+row["contract_id"],contract)])
                 result.append(row)
         if records: self.store.save_bundle(records)
         return result
+
+    def futures_contract(self,symbol,now):
+        """Resolve the nearest unexpired fixed futures contract from the dated master."""
+        frame=self.master()
+        matches=frame[frame.SEM_INSTRUMENT_NAME.astype(str).eq("FUTIDX") &
+                      frame.SEM_TRADING_SYMBOL.astype(str).str.startswith(symbol+"-")]
+        matches=matches[matches.SEM_EXPIRY_DATE.astype(str).str[:10]>=str(now.date())]
+        if matches.empty: raise ValueError("No eligible index futures contract in the dated master")
+        row=matches.sort_values("SEM_EXPIRY_DATE").iloc[0]
+        contract={"symbol":symbol,"contract_id":f"{row.SEM_EXM_EXCH_ID}:{int(row.SEM_SMST_SECURITY_ID)}",
+                  "security_id":str(int(row.SEM_SMST_SECURITY_ID)),"exchange":str(row.SEM_EXM_EXCH_ID),
+                  "expiry":str(row.SEM_EXPIRY_DATE)[:10],"instrument":"FUTIDX","identity_verified":True,
+                  "metadata_source":"dhan_security_master","metadata_observed_on":str(now.date())}
+        return contract
+
+    def futures_candles(self,symbol,now):
+        """Dated fixed-contract futures data for advisory VWAP; never an order."""
+        contract=self.futures_contract(symbol,now)
+        from datetime import timedelta
+        data=self.call(self.client.intraday_minute_data,contract["security_id"],contract["exchange"]+"_FNO",
+                       "FUTIDX",str(now.date()-timedelta(days=7)),str(now.date()+timedelta(days=1)),1,False,cache_seconds=30)
+        fields=("timestamp","open","high","low","close","volume")
+        if not data.get("timestamp"): return contract,pd.DataFrame(columns=fields)
+        if any(len(data.get(k,[]))!=len(data["timestamp"]) for k in fields):
+            raise ValueError("Incomplete futures candle response")
+        bars=pd.DataFrame({k:data[k] for k in fields})
+        bars["timestamp"]=pd.to_datetime(bars.timestamp,unit="s",utc=True).dt.tz_convert("Asia/Kolkata")
+        self._retain_complete_chart_sessions(bars, contract["security_id"], contract["exchange"]+"_FNO", "FUTIDX")
+        self.store.put_record("chart_futures_contracts", contract["contract_id"], {**contract, "captured_at":now.isoformat()})
+        return contract,bars
 
     def quotes(self,contracts):
         if not contracts: return {}
@@ -520,7 +604,9 @@ class DhanGateway:
                 "last_trade_timestamp":stamp,"quote_update_timestamp":None,
                 "source":"dhan_quote","bid":float(bid.get("price",0)),"bid_qty":int(bid.get("quantity",0)),
                 "ask":float(ask.get("price",0)),"ask_qty":int(ask.get("quantity",0)),
-                "ltp":q.get("last_price"),"volume":q.get("volume"),"oi":q.get("oi")}
+                "ltp":q.get("last_price"),
+                "volume":q.get("volume") if q.get("volume") is not None else c.get("volume"),
+                "oi":q.get("oi") if q.get("oi") is not None else c.get("oi")}
         return result
 
     def candles(self,symbol,start,end,cache_seconds=30,cancel=None):
@@ -532,7 +618,36 @@ class DhanGateway:
         frame=pd.DataFrame({k:data[k] for k in fields})
         frame["timestamp"]=pd.to_datetime(frame.timestamp,unit="s",utc=True).dt.tz_convert("Asia/Kolkata")
         frame["symbol"]=symbol
+        if cache_seconds >= 0:
+            self._retain_complete_chart_sessions(frame, under["security_id"])
         return frame.drop_duplicates("timestamp").sort_values("timestamp")
+
+    def _retain_complete_chart_sessions(self, frame, security_id, exchange="IDX_I", instrument="INDEX"):
+        """Publish complete observed sessions to the permanent chart history catalogue."""
+        now = now_ist()
+        fields = ["open", "high", "low", "close", "volume"]
+        identity = [str(security_id), exchange, instrument, 1, False]
+        family = hashlib.sha256(("intraday_minute_data"+json.dumps(identity, sort_keys=True)).encode()).hexdigest()
+        minutes = frame.timestamp.dt.hour*60+frame.timestamp.dt.minute
+        session = frame[(minutes >= 555) & (minutes < 930)]
+        for day, part in session.groupby(session.timestamp.dt.date):
+            expected = pd.date_range(str(day)+" 09:15", periods=375, freq="min", tz="Asia/Kolkata")
+            part = part.sort_values("timestamp")
+            if expected[-1]+pd.Timedelta(minutes=1) > now or list(part.timestamp) != list(expected):
+                continue
+            values = part[fields].apply(pd.to_numeric, errors="coerce")
+            if not values.map(lambda v: pd.notna(v) and float("-inf") < v < float("inf")).all().all():
+                continue
+            if not ((values.low > 0) & (values.low <= values.open) & (values.low <= values.close) &
+                    (values.high >= values.open) & (values.high >= values.close) & (values.volume >= 0)).all():
+                continue
+            raw = {k: values[k].tolist() for k in fields}
+            raw["timestamp"] = (part.timestamp.astype("int64")//10**9).tolist()
+            key = "chart-index-session:"+family+":"+str(day)
+            if self.store.cache_get(key, include_expired=True) == raw:
+                continue
+            self.store.cache_put(key, raw, -1)
+            self.store.index_history(key, family, str(day), str(day+pd.Timedelta(days=1)), fields)
 
     def contract_candles(self,contract,start,end):
         if not contract.get("identity_verified"): raise ValueError("Unverified option contract")

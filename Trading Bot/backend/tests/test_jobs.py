@@ -26,6 +26,29 @@ def test_completed_report_survives_manager_restart(tmp_path,monkeypatch):
     assert restored.store.get_record("reports",job["id"])==report
 
 
+def test_autonomous_observed_job_reaches_shared_replay_and_saves_report(tmp_path):
+    jobs=manager(tmp_path)
+    job=jobs.start({"source":"observed","strategy_mode":"autonomous","symbols":["NIFTY","SENSEX"],
+                    "from":"2026-10-02","to":"2026-10-02","capital":30000,"risk_per_trade":650})
+    jobs.worker.join(timeout=10)
+    assert not jobs.worker.is_alive()
+    saved=jobs.store.get_record("jobs",job["id"])
+    assert saved["status"] == "research_partial" and saved["progress"] == 100
+    report=jobs.store.get_record("reports",saved["report_id"])
+    assert report["source"] == "autonomous_observed_quote_replay"
+    assert report["policy_version"] == "autonomous-paper-v1" and not report["trades"]
+    assert jobs.store.get_record("backtest","latest")["report_id"] == job["id"]
+    assert not jobs.store.list_records("learning_runs")
+
+
+@pytest.mark.parametrize("source", ["dhan", "csv"])
+def test_autonomous_job_cannot_use_inputs_that_lack_recorded_books(tmp_path, source):
+    jobs=manager(tmp_path)
+    with pytest.raises(ValueError,match="archived quote and API observations"):
+        jobs.start({"source":source,"strategy_mode":"autonomous"})
+    assert not jobs.store.list_records("jobs")
+
+
 def test_single_worker_cancel_preserves_previous_report(tmp_path,monkeypatch):
     jobs=manager(tmp_path); entered=threading.Event(); release=threading.Event()
     jobs.store.put_record("backtest","latest",{"report_id":"previous"})
@@ -63,11 +86,11 @@ def test_backtest_budgets_are_not_capped_by_paper_settings():
     settings=Settings(_env_file=None)
     config=resolve_backtest_budgets({"capital":20000000,"risk_per_trade":5000},settings)
     assert config["capital"]==20000000 and config["risk_per_trade"]==5000
-    assert config["daily_loss_limit"]==pytest.approx(5000*1200/600) and config["correlated_risk_limit"]==pytest.approx(5000*600/600)
-    assert settings.max_trade_risk_rupees==600 and settings.daily_loss_limit_rupees==1200
-    assert settings.hard_daily_halt_rupees==1200 and settings.max_correlated_risk_rupees==600
-    assert settings.planned_daily_loss_rupees==1000 and settings.monthly_profit_target==20000
-    assert settings.monthly_profit_target_basis=="gross"
+    assert config["daily_loss_limit"]==pytest.approx(5000*1200/650) and config["correlated_risk_limit"]==5000
+    assert settings.max_trade_risk_rupees==650 and settings.daily_loss_limit_rupees==1200
+    assert settings.hard_daily_halt_rupees==1200 and settings.max_correlated_risk_rupees==650
+    assert settings.planned_daily_loss_rupees==1000 and settings.monthly_profit_target==18000
+    assert settings.monthly_profit_target_basis=="net"
     explicit=resolve_backtest_budgets({"risk_per_trade":700,"daily_loss_limit":9000,"correlated_risk_limit":8000},settings)
     assert explicit["daily_loss_limit"]==9000 and explicit["correlated_risk_limit"]==8000
 

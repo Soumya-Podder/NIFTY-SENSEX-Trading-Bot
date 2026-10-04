@@ -31,6 +31,13 @@ def report_from_run(result, config):
         contexts=attribution([{**t,"context":t["agent_contexts"][agent]} for t in items],"context")
         agents.append({"agent":agent,**result.get("agent_counts",{}).get(agent,{}),"outcomes":len(items),
             "pnl":sum(t["pnl"] for t in items),"contexts":contexts})
+    exits=[]
+    for reason in sorted({t.get("reason","UNKNOWN") for t in attributed}):
+        items=[t for t in attributed if t.get("reason","UNKNOWN")==reason]
+        holding=[t["holding_minutes"] for t in items if t.get("holding_minutes") is not None]
+        exits.append({"reason":reason,"trades":len(items),"pnl":sum(t["pnl"] for t in items),
+            "average_pnl":sum(t["pnl"] for t in items)/len(items),
+            "average_holding_minutes":sum(holding)/len(holding) if holding else None})
     return json_safe({"status":result.get("status", "complete" if result.get("quality")=="verified" else "data_blocked"),
         "quality":result.get("quality","incomplete"),"source":result.get("source","contract_specific_candles"),
         "replay_version":result.get("replay_version"),
@@ -46,8 +53,13 @@ def report_from_run(result, config):
         "daily":result.get("daily",[]),"trades":trades,"unresolved":result.get("unresolved",[]),
         "skipped_entries":result.get("skipped_entries",[]),
         "issues":result.get("issues",[]),"coverage":result.get("coverage",[]),
+        "option_screen_validation":result.get("option_screen_validation") or ({"requested":config.get("option_screen","legacy"),
+            "runtime_screen_validated":False,"specialist_review_validated":False,
+            "reason":"Rolling candle research does not reproduce the current option screen or execution path"} if config.get("source")=="dhan" else None),
         "reconstruction":result.get("reconstruction"),
         "agent_counts":result.get("agent_counts",{}),"agent_performance":agents,
+        "exit_analysis":{"basis":"gross" if research else "net","groups":exits,
+            "note":"Completed exits only; descriptive evidence, not an optimised exit policy"},
         "attribution":{"regimes":attribution(attributed,"regime"),"setups":attribution(attributed,"setup")},
         "assumptions":result.get("assumptions",["Simulation, not broker fills; one adverse tick; stop first if both barriers cross.",
             "Performance attribution is shared trade P&L, not an additive causal contribution per agent.",

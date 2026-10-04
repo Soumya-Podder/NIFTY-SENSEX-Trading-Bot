@@ -303,8 +303,9 @@ class ResearchReplay:
         eval_trades = self.trades if self.net else gross_trades
         eval_days = self.daily if self.net else gross_days
         target=self.config.get("monthly_target",self.settings.monthly_profit_target)
-        calculated = metrics(eval_trades, [self.config["capital"]]+[p["value"] for p in self.curve], eval_days,target)
-        gross_metrics = metrics(gross_trades,[self.config["capital"]]+[p["value"] for p in self.gross_curve],gross_days,target)
+        target_basis=self.config.get("monthly_target_basis",self.settings.monthly_profit_target_basis)
+        calculated = metrics(eval_trades, [self.config["capital"]]+[p["value"] for p in self.curve], eval_days,target,target_basis if self.net else "gross")
+        gross_metrics = metrics(gross_trades,[self.config["capital"]]+[p["value"] for p in self.gross_curve],gross_days,target,"gross")
         gross = calculated["total_pnl"] if not self.net else sum(t.get("gross_pnl", 0) for t in self.trades)
         net_total = calculated["total_pnl"] if self.net else None
         total_costs = sum(t.get("costs", 0) for t in self.trades) if self.net else None
@@ -322,6 +323,11 @@ class ResearchReplay:
             for key in ("profit_factor", "win_rate", "expectancy", "max_drawdown", "max_drawdown_pct", "gross_average_daily_pnl", "average_monthly_pnl"):
                 calculated[key] = None
             calculated["profit_factor_status"] = "INCOMPLETE"
+        if not self.net:
+            calculated.update(average_monthly_pnl=None,monthly_pnl={},monthly_target_basis=target_basis)
+        if incomplete:
+            calculated["monthly_pnl"]={}
+            calculated["realized_payoff_ratio"]=calculated["breakeven_win_rate"]=None
         return {"status":"research_partial" if incomplete else "research_complete",
             "quality":"research_net" if self.net else "research",
             "replay_version":"orb-retest-rolling-v1" if self.plan else "rolling-research-v3",

@@ -17,6 +17,10 @@ ROOT=Path(__file__).resolve().parent
 
 def main():
     import msvcrt
+    temporary=ROOT.parents[1]/'.tmp'
+    temporary.mkdir(exist_ok=True)
+    os.environ.update(TEMP=str(temporary),TMP=str(temporary),PYTHONDONTWRITEBYTECODE='1')
+    sys.dont_write_bytecode=True
     lock=(ROOT/'.paper_service.lock').open('a+b')
     lock.seek(0); lock.write(b'0'); lock.flush(); lock.seek(0)
     try: msvcrt.locking(lock.fileno(),msvcrt.LK_NBLCK,1)
@@ -35,7 +39,7 @@ def main():
             with socket.socket() as probe:
                 occupied=probe.connect_ex(('127.0.0.1',8080))==0
             if not occupied and (child is None or child.poll() is not None):
-                child=subprocess.Popen([sys.executable,'-m','uvicorn','app.main:app','--host','127.0.0.1','--port','8080','--no-access-log'],
+                child=subprocess.Popen([sys.executable,'-B','-m','uvicorn','app.main:app','--host','127.0.0.1','--port','8080','--no-access-log'],
                     cwd=ROOT,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
                     creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
         time.sleep(2)

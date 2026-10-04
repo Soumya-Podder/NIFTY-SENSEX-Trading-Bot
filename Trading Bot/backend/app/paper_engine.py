@@ -1,6 +1,7 @@
 import threading
 import time
 import math
+from collections import Counter
 from datetime import timedelta
 import pandas as pd
 from .pipeline import DecisionPipeline,execution_context,plan_protection,plan_exit
@@ -12,9 +13,10 @@ from .telemetry.event_bus import event_bus
 
 
 class PaperEngine:
-    def __init__(self,settings,store,gateway,broker,market=None):
+    def __init__(self,settings,store,gateway,broker,market=None,*,clock=None):
         self.settings=settings; self.store=store; self.gateway=gateway; self.broker=broker
         self.market=market
+        self.execution_clock=clock
         self.stop_event=threading.Event(); self.lock=threading.RLock(); self.threads=[]
         self.quotes={}; self.contracts=[]; self.frames={}; self.processed={}; self.last_status=None
         self.protections={}; self.policy_day=None
@@ -22,10 +24,15 @@ class PaperEngine:
         self.status["scans"]={}
         self.wait_reasons={}
         self.last_credential_generation=-1
+        self.telegram_position_updates={}
+        self.protection_attempts={}
 
         self.pipeline=DecisionPipeline(store.active_learning_policies(),self.publish)
         self.risk=RiskEngine(settings.max_trade_risk_rupees,settings.daily_loss_limit_rupees,
                              settings.hard_daily_halt_rupees,settings.max_open_positions)
+
+    def _now(self):
+        return self.execution_clock() if self.execution_clock else now_ist()
 
     def _freeze_policies(self,now):
         day=str(now.date())
@@ -48,8 +55,10 @@ class PaperEngine:
             self.status["scans"].setdefault(symbol,{}).update(stage=item["agent"],reason=item["summary"],status=item["status"],decision_at=item["timestamp"])
 
     def start(self):
-        if self.threads: return
-        for name,target in (("paper-nifty",lambda:self._data_loop("NIFTY")),("paper-sensex",lambda:self._data_loop("SENSEX")),("paper-quotes",self._quote_loop),("paper-engine",self._loop),("paper-feedback",self._feedback_loop),("paper-feed-watch",self._feed_watch)):
+        if any(thread.is_alive() for thread in self.threads): return
+        self.threads.clear()
+        self.stop_event.clear()
+        for name,target in (("paper-nifty",lambda:self._data_loop("NIFTY")),("paper-sensex",lambda:self._data_loop("SENSEX")),("paper-quotes",self._quote_loop),("paper-protection",self._protection_loop),("paper-engine",self._loop),("paper-feedback",self._feedback_loop),("paper-feed-watch",self._feed_watch)):
             thread=threading.Thread(name=name,target=target,daemon=True); self.threads.append(thread); thread.start()
 
     def stop(self):
@@ -57,7 +66,7 @@ class PaperEngine:
         for thread in self.threads: thread.join(timeout=2)
 
     def _session(self):
-        return session_state(start=self.settings.session_start,cutoff=self.settings.entry_cutoff,exit_at=self.settings.session_exit)
+        return session_state(self._now(),start=self.settings.session_start,cutoff=self.settings.entry_cutoff,exit_at=self.settings.session_exit)
 
     def _feed_watch(self):
         while not self.stop_event.is_set():
@@ -76,7 +85,8 @@ class PaperEngine:
             try:
                 for episode in self.store.pending_paper_feedback():
                     if self.stop_event.is_set(): return
-                    learn_from_outcomes([episode],"paper",self.store,run_id="paper:"+episode["id"],quality="verified")
+                    learn_from_outcomes([episode],"paper",self.store,run_id="paper:"+episode["id"],
+                        quality="unverified" if episode.get("costs_estimated") else "verified")
                 self.status["feedback_error"]=None
             except Exception as exc: self.status["feedback_error"]=str(exc)[:300]
             self.stop_event.wait(5)
@@ -85,15 +95,15 @@ class PaperEngine:
         while not self.stop_event.is_set():
             if self._session() in {"ENTRY_WINDOW","MANAGE_ONLY"}:
                 try:
-                    day=now_ist().date(); contracts=[]; frames={}
+                    day=self._now().date(); contracts=[]; frames={}
                     for symbol in ((only_symbol,) if only_symbol else ("NIFTY","SENSEX")):
                         frame=self.gateway.candles(symbol,day-timedelta(days=7),day+timedelta(days=1))
-                        frame=frame[frame.timestamp+pd.Timedelta(minutes=1)<=pd.Timestamp(now_ist())]
+                        frame=frame[frame.timestamp+pd.Timedelta(minutes=1)<=pd.Timestamp(self._now())]
                         frames[symbol]=self.pipeline.features(frame)
                         with self.lock: self.frames[symbol]=frames[symbol]
-                        self.status.setdefault("data_symbols",{})[symbol]={"updated_at":now_ist().isoformat(),
+                        self.status.setdefault("data_symbols",{})[symbol]={"updated_at":self._now().isoformat(),
                             "last_bar":str(frame.timestamp.max()) if not frame.empty else None,"rows":len(frame)}
-                        chain=self.gateway.chain(symbol,exclude_expiry_day=bool(self.broker.policy))
+                        chain=self.gateway.chain(symbol,exclude_expiry_day=bool(self.broker.policy),include_atm=True)
                         cash=self.broker.snapshot()["cash"]
                         affordable=[c for c in chain if c.get("ltp") and 0<float(c["ltp"])*c["lot_size"]<cash]
                         affordable.sort(key=lambda c:abs(abs(c.get("delta") or 0)-.5))
@@ -102,9 +112,9 @@ class PaperEngine:
                         with self.lock:
                             self.contracts=[c for c in self.contracts if c["symbol"]!=symbol]+affordable[:24]
                         if self.broker.policy:
-                            self._freeze_policies(now_ist())
+                            self._freeze_policies(self._now())
                             from .setups import opening_range_retest
-                            signal=opening_range_retest(frames[symbol],now_ist())
+                            signal=opening_range_retest(frames[symbol],self._now())
                             if signal:
                                 signal=self.pipeline.plan_candidate(signal,symbol)
                             if signal:
@@ -121,7 +131,7 @@ class PaperEngine:
                     self.status["data_error"]=None
                 except Exception as exc:
                     self.status["data_error"]=str(exc)[:300]
-                    if only_symbol: self.status.setdefault("data_symbols",{})[only_symbol]={"error":str(exc)[:300],"updated_at":now_ist().isoformat()}
+                    if only_symbol: self.status.setdefault("data_symbols",{})[only_symbol]={"error":str(exc)[:300],"updated_at":self._now().isoformat()}
             self.stop_event.wait(10)
 
     def _quote_loop(self):
@@ -142,12 +152,59 @@ class PaperEngine:
                         for position in [*positions,*research_positions]:
                             q=quotes.get(position["contract_id"])
                             if q and q.get("bid",0)>0:
-                                try: q["exit_cost_estimate"]=self.broker.cost.quote(position,0,q["bid"],position["qty"])["total"]
+                                try:
+                                    fast=getattr(self.broker.cost,"fast_exit_estimate",None)
+                                    fee=fast(position,position["qty"]) if fast else None
+                                    if fee is None: fee=self.broker.cost.quote(position,0,q["bid"],position["qty"])
+                                    q["exit_cost_estimate"]=fee["total"]
                                 except Exception: q["exit_cost_estimate"]=None
                         with self.lock: self.quotes=quotes
                         self.status["quote_error"]=None
                 except Exception as exc: self.status["quote_error"]=str(exc)[:300]
             self.stop_event.wait(2)
+
+    def _protect_once(self):
+        """Check held contracts independently of entry scans and data requests."""
+        positions=self.broker.positions()["positions"]
+        if not positions: return
+        now=self._now()
+        self.status["last_protection_check"]=now.isoformat()
+        for position in positions:
+            if self.market:
+                snapshot=self.market.execution_snapshot(position["symbol"])
+                quote=snapshot["options"].get(position["contract_id"],{})
+                underlying=snapshot["underlying"]
+            else:
+                with self.lock: quote=dict(self.quotes.get(position["contract_id"],{}))
+                underlying={}
+            fresh=quote_is_fresh(quote,now,self.settings.max_quote_age_seconds)
+            spot=underlying.get("ltp") if quote_is_fresh(underlying,now,self.settings.max_quote_age_seconds) else None
+            reason=(position.get("exit_request") or {}).get("reason") or plan_exit(position,now,
+                bid=quote.get("bid") if fresh else None,underlying=spot,
+                halted=self.broker.state["halted"],close_start=self.settings.session_exit)
+            if reason: self.broker.request_exit(position["id"],reason,now)
+            if not reason or not fresh or int(quote.get("bid_qty") or 0)<int(position["lot_size"]): continue
+            last=self.protection_attempts.get(position["id"],0)
+            if time.monotonic()-last<1: continue
+            self.protection_attempts[position["id"]]=time.monotonic()
+            try:
+                trade=self.broker.close(position["id"],quote,reason,now)
+            except Exception as exc:
+                self.status["protection_error"]=str(exc)[:300]
+                try: self.broker.control(halted=True,reason="Exit pending: protection retry required")
+                except Exception: pass
+            else:
+                if trade:
+                    self.status["protection_error"]=None
+                    self.status["exit_error"]=None
+                    try: self.publish(event("Execution",position["symbol"],"FILLED",f"Paper exit: {reason}",evaluation=trade))
+                    except Exception as exc: self.status["event_error"]=str(exc)[:300]
+
+    def _protection_loop(self):
+        while not self.stop_event.is_set():
+            try: self._protect_once()
+            except Exception as exc: self.status["protection_error"]=str(exc)[:300]
+            self.stop_event.wait(.5)
 
     def _loop(self):
         consecutive_errors = 0
@@ -187,8 +244,73 @@ class PaperEngine:
         self.status["credentials"]={"checked_at":now.isoformat(),"generation":self.gateway.credential_generation,
             "configured":all(credentials),"source":"project .env"}
 
+    def _telegram_no_trade_reasons(self,day):
+        excluded={"PREOPEN","MANAGE_ONLY","EXIT_ONLY","WEEKEND","HOLIDAY"}
+        rows=[]
+        for item in self.store.list_records("events",2000):
+            if str(item.get("timestamp",""))[:10]!=day or item.get("status") not in {"WAITING","REJECTED"}: continue
+            summary=str(item.get("summary") or "").strip()
+            if not summary or summary in excluded: continue
+            rows.append((str(item.get("symbol") or "PORTFOLIO"),str(item.get("agent") or "Agent"),summary))
+        counts=Counter(rows)
+        return [f"• {symbol} / {agent}: {reason} ({count} checks)"
+                for (symbol,agent,reason),count in counts.most_common(8)]
+
+    def _telegram_session_reports(self,now,account):
+        notifier=getattr(self.broker,"notifier",None)
+        if not notifier or not notifier.enabled or not notifier.configured: return
+        if session_state(now,start=self.settings.session_start,cutoff=self.settings.entry_cutoff,
+                         exit_at=self.settings.session_exit) in {"WEEKEND","HOLIDAY"}: return
+        day=str(now.date()); clock=now.strftime("%H:%M")
+        checkpoint=self.store.get_record("telegram_sessions",day,{})
+        if self.settings.session_start<=clock<self.settings.telegram_session_report_time and not checkpoint.get("start_sent_at"):
+            strategies=getattr(self,"strategies",None) or []
+            names=", ".join(item.get("name",item.get("id","")) for item in strategies) or "configured strategy portfolio"
+            message=(f"PAPER SESSION START · {day}\n"
+                f"Monitoring: {self.settings.session_start}–{self.settings.session_exit} IST · final report {self.settings.telegram_session_report_time} IST\n"
+                f"Capital: ₹{account['initial_capital']:,.2f} · Per-trade risk: ₹{self.settings.max_trade_risk_rupees:,.2f}\n"
+                f"Daily hard loss limit: ₹{self.settings.hard_daily_halt_rupees:,.2f}\n"
+                f"Strategies: {names}\nPaper execution only; live-money orders are disabled.")
+            if notifier.notify(message):
+                checkpoint["start_sent_at"]=now.isoformat()
+                self.store.put_record("telegram_sessions",day,checkpoint)
+        positions=account.get("positions",[]); active_ids=set()
+        for position in positions:
+            identifier=position["id"]; active_ids.add(identifier)
+            last=self.telegram_position_updates.get(identifier,0)
+            if time.monotonic()-last<float(self.settings.telegram_position_update_seconds): continue
+            qty=int(position["qty"]); entry=float(position["entry"]); mark=float(position.get("mark",entry))
+            gross=(mark-entry)*qty
+            exit_cost=position.get("exit_cost_estimate")
+            net=(gross-float(position.get("entry_charges_remaining",0))-float(exit_cost)) if exit_cost is not None else None
+            session_pnl=account.get("liquidation_pnl") if account.get("liquidation_pnl") is not None else account.get("session_pnl",0)
+            message=(f"PAPER POSITION UPDATE · {position['symbol']} {position.get('option_type','')} {position.get('strike','')}\n"
+                f"Qty: {qty} · Entry: ₹{entry:,.2f} · Current bid: ₹{mark:,.2f}\n"
+                f"Position gross P&L: ₹{gross:,.2f}\n"
+                f"Position estimated net P&L: {'unavailable' if net is None else '₹'+format(net,',.2f')}\n"
+                f"Current session P&L: ₹{float(session_pnl):,.2f}\n"
+                f"Observed: {now.strftime('%H:%M:%S')} IST")
+            if notifier.notify(message): self.telegram_position_updates[identifier]=time.monotonic()
+        self.telegram_position_updates={key:value for key,value in self.telegram_position_updates.items() if key in active_ids}
+        if clock>=self.settings.telegram_session_report_time and not checkpoint.get("end_sent_at"):
+            trades=[item for item in self.store.list_records("trades",1000) if str(item.get("exit_ts",""))[:10]==day]
+            header=(f"PAPER SESSION REPORT · {day}\nTrades: {len(trades)} · Net session P&L: ₹{float(account.get('session_pnl',0)):,.2f}\n"
+                    f"Closing equity: ₹{float(account.get('equity',0)):,.2f} · Open positions: {account.get('open_positions',0)}")
+            if trades:
+                wins=sum(float(item.get("pnl",0))>0 for item in trades)
+                details=f"\nWins/Losses: {wins}/{len(trades)-wins} · Charges: ₹{sum(float(item.get('costs',0)) for item in trades):,.2f}"
+            else:
+                reasons=self._telegram_no_trade_reasons(day)
+                details="\nNo trade was taken because no candidate completed every strategy, liquidity, EV and risk gate."
+                details+="\nMost frequent recorded blockers:\n"+("\n".join(reasons) if reasons else "• No confirmed strategy setup was recorded.")
+            recorder=self.market.recorder.status() if self.market and self.market.recorder else {}
+            details+=f"\nData saved: {recorder.get('persisted_this_run',0):,} observations · dropped: {recorder.get('dropped_this_run',0):,}."
+            if notifier.notify(header+details):
+                checkpoint["end_sent_at"]=now.isoformat()
+                self.store.put_record("telegram_sessions",day,checkpoint)
+
     def cycle(self):
-        now=now_ist(); session=self._session()
+        now=self._now(); session=self._session()
         self._refresh_runtime_credentials(now)
         if self.broker.policy: self._freeze_policies(now)
         self.status.update(last_cycle=now.isoformat(),session=session)
@@ -202,6 +324,13 @@ class PaperEngine:
             for cid,q in streamed.items():
                 previous=quotes.get(cid,{})
                 quotes[cid]={**q,"exit_cost_estimate":previous.get("exit_cost_estimate") if previous.get("bid")==q.get("bid") else None}
+        fast=getattr(self.broker.cost,"fast_exit_estimate",None)
+        if fast:
+            for position in self.broker.positions()["positions"]:
+                quote=quotes.get(position["contract_id"])
+                if quote:
+                    fee=fast(position,position["qty"])
+                    if fee: quote["exit_cost_estimate"]=fee["total"]
         try:
             self.broker.mark(quotes,now)
             self.status["persistence_error"]=None
@@ -210,6 +339,7 @@ class PaperEngine:
             # Broker rollback preserves the last durable account; entries stay blocked.
             self.status["persistence_error"]=type(exc).__name__
         account=self.broker.snapshot()
+        self._telegram_session_reports(now,account)
         limit=min(self.settings.daily_loss_limit_rupees,self.settings.hard_daily_halt_rupees)
         if account["session_pnl"]<=-limit:
             self.broker.control(halted=True,reason="Daily portfolio loss limit reached")
@@ -228,16 +358,20 @@ class PaperEngine:
             elif quote_is_fresh(q,now,self.settings.max_quote_age_seconds):
                 if q.get("bid",0)<=p["stop"]: reason="STOP"
                 elif q.get("bid",0)>=p["target"]: reason="TARGET"
+            reason=(p.get("exit_request") or {}).get("reason") or reason
             if reason:
                 try:
-                    if not q: raise ValueError("Exit pending: waiting for fresh held-contract depth")
                     trade=self.broker.close(p["id"],q,reason,now)
-                    if trade:
-                        self.publish(event("Execution",p["symbol"],"FILLED",f"Paper exit: {reason}",evaluation=trade))
-                        self.status["exit_error"]=None
                 except Exception as exc:
                     self.status["exit_error"]=str(exc)[:300]
-                    self.broker.control(halted=True,reason="Exit pending: waiting for fresh depth and broker charges")
+                    self.broker.control(halted=True,reason="Exit pending: waiting for executable depth or persistence recovery")
+                else:
+                    if trade:
+                        self.status["exit_error"]=None
+                        try:
+                            self.publish(event("Execution",p["symbol"],"FILLED",f"Paper exit: {reason}",evaluation=trade))
+                        except Exception as exc:
+                            self.status["event_error"]=str(exc)[:300]
         account=self.broker.snapshot()
         if session!="ENTRY_WINDOW" or not account["enabled"] or account["halted"] or not account["valuation_complete"]:
             self.status["state"]="HALTED" if account["halted"] else "PAUSED" if not account["enabled"] else session
@@ -247,6 +381,12 @@ class PaperEngine:
                 self.last_status=self.status["state"]
             return
         self.status["state"]="RUNNING"; self.last_status="RUNNING"
+        if getattr(self,"entry_readiness",None):
+            ready=self.entry_readiness()
+            self.status["entry_blockers"]=ready["entry_blockers"]
+            if not ready["entry_ready"]:
+                self.status["state"]="MANAGING_POSITION" if account["positions"] else "WAITING_DATA"
+                return
         self.evaluate_entries(frames,quotes,now)
 
     def evaluate_entries(self,frames,quotes,now):
@@ -288,14 +428,16 @@ class PaperEngine:
         if self.market:
             underlying=self.market.snapshot().get("symbols",{}).get(symbol,{})
             if not quote_is_fresh(underlying,now,self.settings.max_quote_age_seconds) or not underlying.get("ltp"):
-                self.pipeline.stage("Option Selector",symbol,"REJECTED","Fresh index quote required to exclude current ATM","stale_underlying")
+                self.pipeline.stage("Option Selector",symbol,"REJECTED","Fresh index quote required for strike context","stale_underlying")
                 return
             if options:
                 spot=float(underlying["ltp"])
                 universe=options[0].get("strike_universe") or [q["strike"] for q in options]
                 atm=min(universe,key=lambda strike:abs(strike-spot))
                 options=[{**q,"is_atm":abs(q["strike"]-atm)<1e-8} for q in options]
-        candidates=self.pipeline.option_candidates(signal,options,account["cash"],now,self.settings.max_spread_pct)
+        candidates=self.pipeline.option_candidates(signal,options,account["cash"],now,self.settings.max_spread_pct,buyer_screen=True)
+        from .option_screen import VERSION as SCREEN_VERSION
+        signal={**signal,"option_screen_version":SCREEN_VERSION}
         outcomes=self.store.list_records("episodes",10000)
         for contract in candidates[:3]:
             price=contract["ask"]; lot=contract["lot_size"]
@@ -313,7 +455,11 @@ class PaperEngine:
                 same_direction=sum(p["risk_rupees"] for p in account["positions"] if p["option_type"]==signal["option_type"])
                 if self.broker.policy:
                     if account["positions"] or self.broker.policy.entry_veto(account["loss_ledger"],now): continue
-                    quantity=lot
+                    from .risk import size_plan_order, SIZING_VERSION
+                    sizing=size_plan_order(self.broker.policy,account,contract,stop_price,self.broker.cost)
+                    if not sizing: continue
+                    quantity=sizing["quantity"]
+                    signal["sizing_policy_version"]=SIZING_VERSION
                 else:
                     decision=self.risk.approve(price,stop_fraction,lot,account["session_pnl"],account["open_positions"],
                         cash=account["cash"],open_risk=account["open_risk_rupees"],estimated_cost=fee["total"],
@@ -328,10 +474,10 @@ class PaperEngine:
                         available_risk(self.settings.max_trade_risk_rupees,self.settings.daily_loss_limit_rupees,
                             account["session_pnl"],account["open_risk_rupees"],self.settings.max_correlated_risk_rupees,same_direction))
                 if risk>budget: continue
-                matched=[t for t in outcomes if t.get("setup")==signal["setup"] and t.get("regime")==signal["regime"]]
+                matched=[t for t in outcomes if t.get("setup")==signal["setup"] and t.get("regime")==signal["regime"] and t.get("option_screen_version")==SCREEN_VERSION]
                 ev=ExpectancyEngine().evaluate(matched,(target_price-price)*quantity,(price-stop_price)*quantity,fee["total"])
                 if self.broker.policy:
-                    matched=[t for t in matched if t.get("strategy_version")==signal["strategy_version"] and str(t.get("exit_ts",""))<now.isoformat()]
+                    matched=[t for t in matched if t.get("strategy_version")==signal["strategy_version"] and t.get("sizing_policy_version")==SIZING_VERSION and str(t.get("exit_ts",""))<now.isoformat()]
                     ev=ExpectancyEngine().evaluate_net(matched)
                     if (self.settings.paper_collect_evidence and ev["reason"]=="Insufficient independent net-outcome evidence"):
                         ev={**ev,"status":"OBSERVATION","reason":"Paper evidence collection; net edge is unvalidated. All execution and risk limits apply."}

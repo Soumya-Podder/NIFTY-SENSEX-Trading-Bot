@@ -2,7 +2,8 @@ import numpy as np
 import pandas as pd
 
 
-def metrics(trades,equity,daily=None,monthly_target=20000):
+def metrics(trades,equity,daily=None,monthly_target=15000,monthly_target_basis="net"):
+    if monthly_target_basis not in {"net","gross"}: raise ValueError("Unknown monthly target basis")
     p=np.array([t["pnl"] for t in trades if t.get("pnl") is not None],float)
     wins=p[p>0]; losses=p[p<0]
     eq=pd.Series(equity,dtype=float)
@@ -12,7 +13,7 @@ def metrics(trades,equity,daily=None,monthly_target=20000):
     month_pnls={}
     for day in days:
         month_pnls.setdefault(str(day["date"])[:7], 0.0)
-        month_pnls[str(day["date"])[:7]] += float(day.get("gross_pnl", day["pnl"]))
+        month_pnls[str(day["date"])[:7]] += float(day["pnl"] if monthly_target_basis=="net" else day.get("gross_pnl",day["pnl"]))
     monthly_values=list(month_pnls.values())
     return {"trades":len(p),"wins":len(wins),"losses":len(losses),
             "win_rate":float((p>0).mean()) if len(p) else None,
@@ -29,4 +30,7 @@ def metrics(trades,equity,daily=None,monthly_target=20000):
             "average_monthly_pnl":sum(monthly_values)/len(monthly_values) if monthly_values else None,
             "target_month_rate":sum(v>=monthly_target for v in monthly_values)/len(monthly_values) if monthly_values else None,
             "no_trade_days":sum(d.get("trades",0)==0 for d in days),
-            "monthly_target":monthly_target,"monthly_target_basis":"gross"}
+            "monthly_target":monthly_target,"monthly_target_basis":monthly_target_basis,
+            "monthly_pnl":month_pnls,"monthly_coverage":"Observed sessions only; partial months are not annualised",
+            "realized_payoff_ratio":float(wins.mean()/-losses.mean()) if len(wins) and len(losses) else None,
+            "breakeven_win_rate":float(-losses.mean()/(wins.mean()-losses.mean())) if len(wins) and len(losses) else None}

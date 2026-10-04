@@ -3,6 +3,20 @@ import math
 from .strategy_portfolio import STRATEGIES
 
 
+def monthly_progress(account, target):
+    """Account cash/equity already deducts fees; never deduct charges twice."""
+    session=account["session_date"]; month=session[:7]
+    completed=sum(float(pnl) for day,pnl in account.get("daily_results",{}).items() if day.startswith(month) and day<session)
+    current=account.get("liquidation_pnl") if account.get("liquidation_complete") else None
+    net=completed+current if current is not None and math.isfinite(current) else None
+    return {"month":month,"as_of_session":session,"target":target,"basis":"net",
+        "completed_session_net":completed,"estimated_liquidation_net":net,
+        "remaining":max(0,target-net) if net is not None else None,
+        "achieved":net>=target if net is not None else None,
+        "target_is_guaranteed":False,"affects_entries":False,
+        "note":"After recorded and estimated exit charges; open-position value can change"}
+
+
 def summarize_paper_episodes(episodes, day):
     rows=[]; excluded=0; seen=set()
     for row in sorted(episodes,key=lambda r:str(r.get('exit_ts',''))):

@@ -31,3 +31,11 @@ htmlcov/
 .cache/graphify/
 .cache/graphify-tmp/
 .cache/pip/
+# Project-local skills CLI, downloads and disposable verification files
+.tools/
+.npm-cache/
+.tmp-tests/
+.tmp/
+**/.test-tmp/
+.cache/skills-state/
+.cache/cleanup-quarantine-*/

@@ -38,7 +38,10 @@ def report_view(original):
     # with the recorded cost model, without changing the saved original report.
     if quality == "research_net":
         report["assumptions"] = [s for s in report.get("assumptions", []) if "net P&L and charges are unavailable" not in s]
-        if report.get("fidelity") == "observed_contract_estimated_fees":
+        if report.get("fidelity") == "observed_quote_estimated_fees":
+            report["presentation"]["evidence_label"] = "Archived bid/ask replay · estimated fees · unvalidated paper"
+            report["assumptions"].append("Recorded depth supports simulated fills; queue position, latency and real fills are not established.")
+        elif report.get("fidelity") == "observed_contract_estimated_fees":
             report["presentation"]["evidence_label"] = "Observed contracts · estimated fees · research only"
             report["assumptions"].append("Prices and contract metadata are source observations; charges are scenario estimates. Minute candles do not establish executable bid/ask depth.")
         else:

@@ -4,6 +4,7 @@ import math
 import pandas as pd
 from .indicators import add_features
 from .setups import opening_range_retest
+from .market_structure import analyze_structure, structure_evidence
 
 PORTFOLIO_VERSION = "multi-strategy-paper-v1"
 STRATEGIES = (
@@ -75,9 +76,14 @@ def signal_for(candidate,spec,symbol,regime):
         "evidence_mode":"paper_observation","execution_ready":False}
 
 
-def evaluate_strategies(frame,now,symbol):
+def evaluate_strategies(frame,now,symbol,structure=None):
     bars,problem=closed_session(frame,now)
-    return evaluate_completed_bars(bars,now,symbol,problem)
+    signals,rows=evaluate_completed_bars(bars,now,symbol,problem)
+    if signals:
+        snapshot=analyze_structure(frame,now,symbol) if structure is None else structure
+        for signal in signals:
+            signal["market_structure"]=structure_evidence(snapshot,signal["option_type"],now)
+    return signals,rows
 
 
 def evaluate_completed_bars(bars,now,symbol,problem=None,*,orb_candidate="evaluate"):
@@ -133,10 +139,11 @@ def evaluate_completed_bars(bars,now,symbol,problem=None,*,orb_candidate="evalua
         else: rows[2]["reason"]="No confirmed range rejection with sufficient room to midpoint"
     else: rows[2]["reason"]="Range regime or 32 completed session bars not available"
     feature_row={k:(None if pd.isna(last.get(k)) else last.get(k)) for k in
-        ("timestamp","close","atr","adx","vwap_distance_atr","relative_volume","rsi")}
+        ("timestamp","close","atr","adx","ema9","ema21","vwap_distance_atr","relative_volume","rsi")}
     feature_row["timestamp"]=str(last.timestamp)
     feature_row["ema_slope_atr"]=slope
     for signal in signals: signal["feature_row"]=feature_row
+    for row in rows: row["feature_row"]=feature_row
     return signals,rows
 
 

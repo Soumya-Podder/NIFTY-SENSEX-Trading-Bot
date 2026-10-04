@@ -4,6 +4,8 @@ from dataclasses import dataclass,asdict
 from datetime import timedelta
 from .session import local_time
 
+SIZING_VERSION="risk-sized-whole-lots-v2"
+
 
 @dataclass(frozen=True)
 class PlanRiskPolicy:
@@ -27,7 +29,7 @@ class PlanRiskPolicy:
     def from_settings(cls,s):
         if s.planned_daily_loss_rupees+s.emergency_execution_reserve_rupees>s.daily_loss_limit_rupees:
             raise ValueError("Planned loss allocation plus execution reserve exceeds the configured daily loss budget")
-        return cls(trade_risk=s.max_trade_risk_rupees,loss_allocation=s.planned_daily_loss_rupees,
+        return cls(trade_risk=min(s.max_trade_risk_rupees,s.max_correlated_risk_rupees),loss_allocation=s.planned_daily_loss_rupees,
             emergency_reserve=s.emergency_execution_reserve_rupees,premium_limit=s.max_premium_commitment_rupees,
             cash_reserve=s.cash_reserve_rupees,max_entries=s.max_entry_attempts,max_losses=s.max_losing_trades,
             cooldown_minutes=s.exit_cooldown_minutes,
@@ -56,6 +58,26 @@ class PlanRiskPolicy:
 def available_risk(max_trade_risk,daily_loss_limit,session_pnl,open_risk,correlated_limit,correlated_risk):
     """One policy for paper and historical replay; data/fill adapters supply observations."""
     return max(0,min(max_trade_risk,daily_loss_limit+min(session_pnl,0)-open_risk,correlated_limit-correlated_risk))
+
+
+def size_plan_order(policy,account,contract,stop,cost):
+    """Largest whole-lot paper quantity inside cash, observed depth and stop risk."""
+    lot=int(contract["lot_size"]); entry=float(contract["ask"]); bid=float(contract["bid"])
+    unit_risk=entry-stop+max(0,entry-bid)
+    cash=min(account["initial_capital"],policy.premium_limit,account["cash"]-policy.cash_reserve)
+    budget=min(policy.trade_risk,policy.remaining(account["loss_ledger"],account["open_risk_rupees"]))
+    if account["positions"] or lot<=0 or not all(math.isfinite(v) for v in (entry,bid,stop,unit_risk,cash,budget)) or not 0<stop<entry:
+        return None
+    depth=min(contract.get("ask_qty",0),contract.get("bid_qty",0))
+    lots=max(0,int(min(cash/entry,budget/unit_risk,depth)//lot))
+    for count in range(lots,0,-1):
+        qty=count*lot
+        buy_cost=cost.quote(contract,entry,0,qty)["total"]
+        stop_cost=cost.quote(contract,entry,stop,qty)["total"]
+        if not all(math.isfinite(v) and v>=0 for v in (buy_cost,stop_cost)): return None
+        if entry*qty+buy_cost<=cash and unit_risk*qty+stop_cost<=budget:
+            return {"quantity":qty,"lots":count,"buy_cost":buy_cost,"stop_cost":stop_cost}
+    return None
 
 class RiskEngine:
     def __init__(self,max_trade_risk=600,daily_loss_limit=1200,hard_halt=1200,max_positions=1):

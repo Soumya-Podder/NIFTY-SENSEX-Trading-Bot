@@ -1,0 +1,29 @@
+[Unit]
+Description=NIFTY SENSEX paper trading
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=paperbot
+Group=paperbot
+WorkingDirectory=/srv/trading_bot_full/Trading Bot/backend
+Environment=TZ=Asia/Kolkata
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=TEMP=/srv/trading_bot_full/.tmp
+Environment=TMP=/srv/trading_bot_full/.tmp
+Environment=TMPDIR=/srv/trading_bot_full/.tmp
+Environment=XDG_CACHE_HOME=/srv/trading_bot_full/.cache
+Environment=LIVE_TRADING_ENABLED=false
+ExecStart="/srv/trading_bot_full/Trading Bot/backend/.venv/bin/python" -B -m uvicorn app.main:app --host 127.0.0.1 --port 8080 --workers 1 --no-access-log
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=120
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=false
+StandardOutput=append:/srv/trading_bot_full/logs/backend.stdout.log
+StandardError=append:/srv/trading_bot_full/logs/backend.stderr.log
+
+[Install]
+WantedBy=multi-user.target

@@ -1,14 +1,25 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { createRoot } from "react-dom/client";
+import { api } from "./api";
 import StrategyPortfolio from "./StrategyPortfolio";
+import AutonomyStatus from "./AutonomyStatus";
 import ModelLearning from "./ModelLearning";
 import LearningMonitor from "./LearningMonitor";
+import LearningRegistry from "./LearningRegistry";
+import DecisionTimeline from "./DecisionTimeline";
+import ThemeToggle from "./ThemeToggle";
+import { registrySummary } from "./activityView";
 import { AgentCanvas, BacktestHistory, BacktestOverview } from "./TradingWorkspace";
 import "./style.css";
 import "./workspace.css";
+import "./activity.css";
+import "./theme.css";
+import "./terminal-shell.css";
+import { TerminalValue } from "./TerminalValue";
 
 type Data = Record<string, any>;
+const MarketTerminal = lazy(() => import("./MarketTerminal"));
 
 const money = (v: number | null | undefined) =>
  v == null || !Number.isFinite(v) ?
@@ -34,34 +45,13 @@ const stamp = (v?: string) =>
 const active = (j: Data) =>
  ["queued", "running", "cancelling"].includes(j.status);
 
-async function api(path: string, body?: Data, signal?: AbortSignal) {
- const response = await fetch(`/api${path}`, {
-  method: body ? "POST" : "GET",
-  headers: body ? { "Content-Type": "application/json" } : undefined,
-
-  body: body ? JSON.stringify(body) : undefined,
-  signal: signal ?? AbortSignal.timeout(30000),
- });
-
- const payload = await response.json();
-
- if (!response.ok)
-  throw new Error(
-   typeof payload.detail === "string" ?
-    payload.detail
-   : JSON.stringify(payload.detail || payload),
-  );
-
- return payload;
-}
-
 function App() {
  const [data, setData] = useState<Data | null>(null);
 
  const [online, setOnline] = useState(false);
  const [connectionChecked, setConnectionChecked] = useState(false);
 
- const [tab, setTab] = useState(()=>["agentic","backtest","monitor"].includes(window.location.hash.slice(1)) ? window.location.hash.slice(1) : "agentic");
+ const [tab, setTab] = useState(()=>["agentic","backtest","monitor","charts"].includes(window.location.hash.slice(1)) ? window.location.hash.slice(1) : "monitor");
  useEffect(()=>{window.history.replaceState(null,"",`#${tab}`);},[tab]);
 
  const [notice, setNotice] = useState("");
@@ -73,6 +63,7 @@ function App() {
  const [reportId, setReportId] = useState("");
 
  const [reportLoading, setReportLoading] = useState(false);
+ const [reportAttempt, setReportAttempt] = useState(0);
 
  const [submitted, setSubmitted] = useState("");
 
@@ -81,6 +72,7 @@ function App() {
  const [datasets, setDatasets] = useState<Data[]>([]);
 
  const [trades, setTrades] = useState<Data[]>([]);
+ const [tradeHistoryError, setTradeHistoryError] = useState("");
 
  const initialReport = useRef(false);
  const manuallySelectedReport = useRef(false);
@@ -90,6 +82,7 @@ function App() {
   let stopped = false;
   let timer: number;
   let controller: AbortController;
+  const datasetsController = new AbortController();
 
   const refresh = async () => {
    controller = new AbortController();
@@ -120,14 +113,15 @@ function App() {
 
   refresh();
 
-  api("/backtest/datasets")
-   .then((d) => setDatasets(d.datasets))
-   .catch((e) => setNotice(e.message));
+  api("/backtest/datasets", undefined, datasetsController.signal)
+   .then((d) => { if (!stopped) setDatasets(d.datasets); })
+   .catch((e) => { if (!stopped) setNotice(e.message); });
 
   return () => {
    stopped = true;
    clearTimeout(timer);
    controller?.abort();
+   datasetsController.abort();
   };
  }, []);
 
@@ -140,16 +134,16 @@ function App() {
   setReport(null);
 
   api(`/backtest/reports/${reportId}`, undefined, controller.signal)
-   .then(setReport)
+   .then((next) => { if (!controller.signal.aborted) setReport(next); })
    .catch((e) => {
-    if (e.name !== "AbortError") setNotice(e.message);
+    if (!controller.signal.aborted) setNotice(e.message);
    })
    .finally(() => {
     if (!controller.signal.aborted) setReportLoading(false);
    });
 
   return () => controller.abort();
- }, [reportId]);
+ }, [reportId, reportAttempt]);
 
  useEffect(() => {
   const job = data?.jobs?.find((j: Data) => j.id === submitted);
@@ -164,11 +158,20 @@ function App() {
 
  useEffect(() => {
   if (!data) return;
+  const controller = new AbortController();
 
-  api("/paper/trades")
-   .then((d) => setTrades(d.trades))
-   .catch(() => {});
- }, [data?.account?.realized_pnl, tab]);
+  api("/paper/trades", undefined, controller.signal)
+   .then((d) => {
+    if (!controller.signal.aborted) {
+     setTrades(d.trades);
+     setTradeHistoryError("");
+    }
+   })
+   .catch((e) => {
+    if (!controller.signal.aborted) setTradeHistoryError(`Paper trade history could not refresh: ${e.message}. Displaying the last loaded history.`);
+   });
+  return () => controller.abort();
+ }, [data?.account?.realized_pnl, data?.account?.loss_ledger?.last_exit, data?.account?.session_date, online, tab]);
 
  const mutate = async (path: string, body: Data = {}) => {
   setBusy(true);
@@ -209,22 +212,24 @@ function App() {
  const events = [...(data?.events || [])].reverse();
 
  const errors = Object.entries(data?.engine || {}).filter(
-  ([key, value]) => key.includes("error") && value,
+  ([key, value]) => key.includes("error") && value && (typeof value !== "object" || Object.keys(value).length > 0),
  );
 
  return (
   <main className="app-shell">
    <header className="topbar">
     <div className="brand-lockup">
-     <div className="brand-mark">OX</div>
+     <div className="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M7 24V12m0 3H4m3 5h3M16 21V5m0 4h-3m3 8h3M25 27V10m0 5h-3m3 8h3" /></svg></div>
      <div>
-      <div className="eyebrow">OBSERVED DATA / SIMULATED EXECUTION</div>
-      <h1>NIFTY / SENSEX <span className="muted">Trading workspace</span></h1>
+      <div className="eyebrow">OPTIONS TERMINAL</div>
+      <h1>NIFTY / SENSEX</h1>
      </div>
     </div>
 
     <div className="topbar-right">
-     <div className="market-pill">
+     <ThemeToggle />
+     <span className={`terminal-connection ${online ? "connected" : "disconnected"}`}><i aria-hidden="true" />{online ? "Engine connected" : connectionChecked ? "Engine offline" : "Connecting"}</span>
+     <div className={`market-pill ${online && data?.market?.live ? "is-live" : ""}`}>
       {online && data?.market?.live ?
        "LIVE DATA"
       : online ?
@@ -232,33 +237,19 @@ function App() {
       : connectionChecked ? "DISCONNECTED" : "CONNECTING"}
      </div>
 
-     <div className="mode-toggle">
-      <button
-       className="selected paper"
-       onClick={() => mutate("/mode", { mode: "paper" })}
-       disabled={busy}
-      >
-       PAPER
-      </button>
-      <button
-       disabled
-       title="Live orders are disabled server-side for this paper-only implementation"
-      >
-       LIVE
-      </button>
-     </div>
+     <span className="mode-pill">Paper trading</span>
     </div>
    </header>
 
-   <section className="market-strip">
+   {tab === "monitor" && <section className="market-strip">
     <div className="market-values">
      {(data?.market?.requested_symbols || []).map((symbol: string) => {
       const q = data?.market?.symbols?.[symbol];
 
       return (
        <div className="market-quote" key={symbol}>
-        <span className="muted">{symbol}</span>
-        <strong className="market-price">{money(q?.ltp)}</strong>
+        <span className="quote-symbol">{symbol === "NIFTY" ? "NIFTY 50" : symbol}<small>INDEX · SPOT</small></span>
+        <strong className="market-price"><TerminalValue value={q?.ltp} animate={online && q?.fresh && data?.market?.live}>{money(q?.ltp)}</TerminalValue></strong>
 
         <span
          className={
@@ -281,8 +272,7 @@ function App() {
       );
      })}
     </div>
-    <div className="market-context">Refresh every 2s · IST</div>
-   </section>
+   </section>}
 
    {!online && connectionChecked && (
     <Notice>
@@ -301,114 +291,51 @@ function App() {
 
    {data?.market?.error && <Notice>{data.market.error}</Notice>}
 
-   {data?.implementation && (
-    <details className="panel spaced implementation-details">
-     <summary>System readiness & paper risk controls</summary>
-     <Head
-      title="Implementation plan readiness"
-      kicker={data.implementation.phase}
-     />
-     <p>
-      Plan baseline: {data.implementation.baseline_status} · Plan backtest:{" "}
-      {data.implementation.plan_backtest_status} · Two-second execution
-      validation: {data.implementation.execution_validation}
-     </p>
-     <p>
-      Paper monitoring starts automatically at 09:15 IST and session exits begin
-      at 15:05 IST. Paper evidence collection is unvalidated observation; cash,
-      liquidity and risk limits remain enforced. Saved legacy runs are not
-      results for this plan.
-     </p>
-     <p>
-      Telegram alerts: {data.telegram?.enabled
-       ? data.telegram?.configured
-        ? data.telegram?.worker_alive ? "enabled and running" : "enabled; worker stopped"
-        : "enabled but credentials are missing"
-       : "disabled"}
-      {data.telegram?.last_error ? ` · last delivery error: ${data.telegram.last_error}` : ""}
-      {data.telegram?.sent ? ` · messages sent this run: ${data.telegram.sent}` : ""}
-     </p>
-     <details>
-      <summary>Implemented controls and remaining work</summary>
-      <ul>
-       {data.implementation.implemented.map((s: string) => (
-        <li key={s}>Implemented: {s}</li>
-       ))}
-       {data.implementation.remaining.map((s: string) => (
-        <li key={s}>Pending: {s}</li>
-       ))}
-      </ul>
-      <h4>Plan role coverage</h4>
-      <ul>
-       {data.implementation.plan_agents?.map((a: Data) => (
-        <li key={a.agent}>
-         <strong>
-          {a.agent}: {a.status}
-         </strong>{" "}
-         — {a.evidence} {a.limitation}
-        </li>
-       ))}
-      </ul>
-     </details>
-     {account.plan_policy && (
-      <p>
-       Remaining planned loss allocation:{" "}
-       {money(account.remaining_loss_allocation)} · loss spend:{" "}
-       {money(account.loss_ledger?.loss_spend)} · entries:{" "}
-       {account.loss_ledger?.entries}/{account.plan_policy.max_entries} ·
-       losses: {account.loss_ledger?.losses}/{account.plan_policy.max_losses}
-       <br />
-       Gross session P&amp;L: {money(account.gross_session_pnl)} · liquidation
-       net P&amp;L: {money(account.liquidation_pnl)} · lock:{" "}
-       {account.loss_ledger?.lock_reason || "None"}
-       <br />
-       Monthly gross target: {money(data.risk?.monthly_target)} · planned daily
-       loss allocation: {money(account.plan_policy.loss_allocation)} · emergency
-       reserve: {money(account.plan_policy.emergency_reserve)} (not a guaranteed
-       loss bound)
-      </p>
-     )}
-    </details>
-   )}
+   {account.halted && <Notice>{account.halt_reason}</Notice>}
+   {errors.map(([key, value]) => <Notice key={key}>
+    {key.replace(/_/g, " ")}: {typeof value === "object" ? Object.entries(value as Data).map(([name, reason]) => `${name}: ${String(reason)}`).join(" · ") : String(value)}
+   </Notice>)}
 
-   <nav className="tabs">
+   <nav className="tabs" aria-label="Trading workspace">
+    <button className={tab === "charts" ? "active" : ""} aria-current={tab === "charts" ? "page" : undefined} onClick={() => setTab("charts")}>Market charts</button>
     <button
      className={tab === "monitor" ? "active" : ""}
+     aria-current={tab === "monitor" ? "page" : undefined}
      onClick={() => setTab("monitor")}
     >
      Dashboard
     </button>
-    <button className={tab === "agentic" ? "active" : ""} onClick={() => setTab("agentic")}>Agentic view</button>
+    <button className={tab === "agentic" ? "active" : ""} aria-current={tab === "agentic" ? "page" : undefined} onClick={() => setTab("agentic")}>Agentic view</button>
     <button
      className={tab === "backtest" ? "active" : ""}
+     aria-current={tab === "backtest" ? "page" : undefined}
      onClick={() => setTab("backtest")}
     >
      Backtest results
     </button>
 
-    <span className="tab-spacer" />
-    <span className="status-note">
-     No guaranteed daily return · no live order authority
-    </span>
    </nav>
 
-    {tab === "agentic" ? (
+   <div className="terminal-view" key={tab}>
+    {tab === "charts" ? <Suspense fallback={<p>Loading chart terminal…</p>}><MarketTerminal account={account} /></Suspense> : tab === "agentic" ? (
     <>
+     <AutonomyStatus data={data?.autonomy} />
      <AgentCanvas data={data} online={online} onDetail={setDetail} />
-     <LearningMonitor data={data?.learning_monitor} />
+     <StrategyPortfolio data={data?.strategies} />
+     {!data?.autonomy && <details key="learning" className="panel spaced workspace-disclosure">
+      <summary>Learning &amp; validation <small>{data?.learning_monitor ? `${data.learning_monitor.deployed_models ?? 0} deployed models` : "Status unavailable"} · {registrySummary(data?.learning_candidates || []).pending.length} awaiting review</small></summary>
+      <div className="disclosure-content">
+     <LearningMonitor data={data?.learning_monitor} online={online} />
      <ModelLearning
       data={data?.ml_learning}
       busy={busy}
       onTrain={() => mutate("/learning/train", {})}
      />
-     <Agents
-      rows={data?.agent_metrics || []}
-      policies={data?.active_policies || {}}
-      onDetail={setDetail}
-     />
      <LearningRegistry
       rows={data?.learning_candidates || []}
       busy={busy}
+      online={online}
+      onDetail={setDetail}
       onReview={async (key: string, action: string, reviewer: string) =>
        mutate(`/learning/candidates/${encodeURIComponent(key)}/review`, {
         action,
@@ -416,50 +343,19 @@ function App() {
        })
       }
      />
-     <section className="panel spaced">
-      <Head title="Latest decisions" kicker="INPUTS / CONTEXTS / REJECTIONS" />
-      {events.length ?
-       events.slice(0, 20).map((e: Data) => (
-        <button className="stream-row" key={e.id} onClick={() => setDetail(e)}>
-         <div className="stream-body">
-          <div>
-           <strong>{e.symbol} · {e.agent}</strong>
-           <span className={e.status === "REJECTED" ? "negative" : "accent"}>{e.status}</span>
-          </div>
-          <p>{e.summary}</p>
-          <small className="muted">{stamp(e.timestamp)} · {e.context || "No context"}</small>
-         </div>
-         <span>›</span>
-        </button>
-       ))
-      : <Empty>No evaluated cycles yet.</Empty>}
-     </section>
+      </div>
+     </details>}
+     <details key="decisions" className="panel spaced workspace-disclosure">
+      <summary>Decision history <small>{events.length} recorded events</small></summary>
+      <div className="disclosure-content"><DecisionTimeline events={events} online={online} onDetail={setDetail} /></div>
+     </details>
     </>
    ) : tab === "monitor" ?
     <>
-     <StrategyPortfolio data={data?.strategies} />
-     {data?.engine?.scans && (
-      <section className="panel spaced">
-       <Head title="Current market scans" kicker="LIVE ENGINE STATUS" />
-       {Object.entries(data.engine.scans).map(
-        ([symbol, scan]: [string, any]) => (
-         <p key={symbol}>
-          <strong>{symbol}</strong>: {scan.reason} · checked{" "}
-          {stamp(scan.checked_at)}
-          {scan.last_bar ? ` · last completed bar ${stamp(scan.last_bar)}` : ""}
-         </p>
-        ),
-       )}
-       {data.engine.data_error && <Notice>{data.engine.data_error}</Notice>}
-       {data.engine.quote_error && <Notice>{data.engine.quote_error}</Notice>}
-       {data.engine.entry_error && <Notice>{data.engine.entry_error}</Notice>}
-      </section>
-     )}
-
      <div className="section-heading">
       <div>
-       <div className="eyebrow">ONE SHARED ACCOUNT / NIFTY + SENSEX</div>
-       <h2>{data?.engine?.state || "Connecting"}</h2>
+       <h2>Paper account</h2>
+       <span className="muted">{online ? data?.engine?.state || "Connected" : "Offline"}</span>
       </div>
       <div className="actions">
        <button
@@ -480,38 +376,18 @@ function App() {
       </div>
      </div>
 
-     {account.halted && <Notice>{account.halt_reason}</Notice>}
-
-     {errors.map(([key, value]) => (
-      <Notice key={key}>
-       {key.replace(/_/g, " ")}: {String(value)}
-      </Notice>
-     ))}
-
+     {tradeHistoryError && <Notice>{tradeHistoryError}</Notice>}
      <PaperPnlPanel account={account} trades={trades} />
 
-     <div className="insight-row">
-      <Kpi
-       label="Daily loss cap"
-       value={money(data?.risk?.daily_loss_limit_rupees)}
-       sub="Stops can slip or wait for liquidity"
-      />
-      <Kpi
-       label="Same-direction risk cap"
-       value={money(data?.risk?.max_correlated_risk_rupees)}
-       sub={`Per trade ${money(data?.risk?.max_trade_risk_rupees)}`}
-      />
-      <Kpi
-       label="Session schedule"
-       value={`${data?.risk?.session_start || "—"}–${data?.risk?.session_exit || "—"} IST`}
-       sub={`New entries stop ${data?.risk?.entry_cutoff || "—"}; first 15 min build the opening range`}
-      />
+     <div className="compact-risk-strip" aria-label="Paper risk limits">
+      <span>Daily loss cap <strong>{money(data?.risk?.daily_loss_limit_rupees)}</strong></span>
+      <span>Risk / trade <strong>{money(data?.risk?.max_trade_risk_rupees)}</strong></span>
+      <span>Session <strong>{data?.risk?.session_start || "—"}–{data?.risk?.session_exit || "—"} IST</strong></span>
      </div>
 
      <section className="panel spaced">
       <Head
-       title="Open paper positions"
-       kicker="SHARED CASH / OBSERVED DEPTH"
+       title="Open positions"
       />
       {account.positions?.length ?
        <div className="table-wrap">
@@ -524,7 +400,7 @@ function App() {
            <th>Entry</th>
            <th>Bid mark</th>
            <th>Stop / target</th>
-           <th>Data</th>
+           <th>Data / exit request</th>
           </tr>
          </thead>
          <tbody>
@@ -546,28 +422,26 @@ function App() {
             <td>
              {money(p.stop)} / {money(p.target)}
             </td>
-            <td>{p.stale ? "STALE" : "OBSERVED"}</td>
+            <td>{p.stale ? "STALE" : "OBSERVED"}{p.exit_request && <><br /><strong>Exit {p.exit_request.status}</strong><br />{p.exit_request.reason} · {p.exit_request.remaining_quantity} remaining</>}</td>
            </tr>
           ))}
          </tbody>
         </table>
        </div>
       : <Empty>
-        No open positions. Entries require fresh quotes, a qualifying setup,
-        available cash and risk capacity.
+        No open paper positions.
        </Empty>
       }
      </section>
 
-     <Trades
-      rows={trades}
-      onDetail={setDetail}
-      title="Paper fills and charges"
-     />
+     <details className="panel spaced workspace-disclosure">
+      <summary>Trade history <small>{trades.length} recorded fills</small></summary>
+      <div className="disclosure-content">{trades.length ? <Trades rows={trades} onDetail={setDetail} title="Paper fills and charges" /> : <Empty>No paper fills recorded.</Empty>}</div>
+     </details>
     </>
    : <>
      <details className="panel spaced implementation-details">
-     <summary>Configure a new backtest · five-year range & historical data</summary>
+     <summary>New backtest</summary>
      <BacktestForm
       defaults={data?.defaults}
       datasets={datasets}
@@ -581,12 +455,11 @@ function App() {
        checked={historyCacheOnly}
        onChange={(e) => setHistoryCacheOnly(e.target.checked)}
       />{" "}
-      Use downloaded historical candles only (recommended) — do not call
-      historical APIs; stop with a missing-range message if unavailable. Current
-      contract metadata and live paper data may still refresh.
+      Use downloaded candles only. Missing ranges stop the run.
      </label>
 
-     <section className="panel spaced">
+     <details className="workspace-disclosure">
+      <summary>Historical data downloads</summary>
       <Head
        title="Local historical data"
        kicker="DOWNLOAD ONCE / REUSE ACROSS STRATEGIES"
@@ -600,21 +473,8 @@ function App() {
         </button>
        }
       />
-      <p>
-       Stores available NIFTY + SENSEX one-minute index and weekly/monthly
-       CALL/PUT rolling data for expiry codes 1/2/3, ATM through ATM±4, in the
-       existing compressed database. Overlapping date ranges reuse downloaded
-       candles. No trades or agent updates run during a download. ATM data
-       supports reconstruction; trade selection remains automatic and non-ATM.
-      </p>
-      <p className="research-note">
-       Dhan's rolling expired-options service exposes up to five years, so the
-       actual archive starts at the derived five-year boundary (currently in
-       2021) and exposes any older portion of 2021 as unavailable. Empty or
-       unavailable periods are not invented. A finished download pass does not
-       certify complete historical coverage or net-profit accuracy.
-      </p>
-     </section>
+      <p>Download available NIFTY and SENSEX rolling candles for research. Existing data is reused; missing periods remain unavailable. Download completion does not verify full coverage or train agents.</p>
+     </details>
 
      </details>
      {(running || submitted) && (
@@ -636,12 +496,15 @@ function App() {
       </section>
      )}
 
-     <BacktestHistory jobs={data?.jobs || []} selected={reportId} onSelect={(id:string|null,job?:Data)=>{if(job){setDetail(job);return;}if(id){manuallySelectedReport.current=true;setReportId(id);}}} />
+     <details key="backtest-history" className="panel spaced workspace-disclosure" open={!reportId}>
+      <summary>Saved backtests <small>Select a previous run</small></summary>
+      <div className="disclosure-content"><BacktestHistory jobs={data?.jobs || []} selected={reportId} onSelect={(id:string|null,job?:Data)=>{if(job){setDetail(job);return;}if(id){manuallySelectedReport.current=true;setReportId(id);}}} /></div>
+     </details>
      {data?.latest_report?.report_id && reportId!==data.latest_report.report_id && <Notice>A newer report is available.<button className="ghost-button" onClick={()=>{manuallySelectedReport.current=false;latestSeenReport.current=data.latest_report.report_id;setReportId(data.latest_report.report_id);}}>Open latest report</button></Notice>}
-     <details className="panel spaced implementation-details">
+     {data?.jobs?.some((j: Data) => j.config?.download_only) && <details className="panel spaced implementation-details">
       <summary>Download jobs & archive manifests</summary>
-      {data?.jobs?.length ?
-       data.jobs.map((j: Data) => (
+      {data?.jobs?.some((j: Data) => j.config?.download_only) ?
+       data.jobs.filter((j: Data) => j.config?.download_only).map((j: Data) => (
         <div className="job-row" key={j.id}>
          <div>
           <strong>
@@ -706,33 +569,66 @@ function App() {
         </div>
        ))
       : <Empty>No saved runs.</Empty>}
-     </details>
+     </details>}
 
-     {reportLoading && <Notice>Loading saved report…</Notice>}
+     {reportLoading && <div role="status"><Notice>Loading saved report…</Notice></div>}
 
      {report ?
       <><BacktestOverview key={reportId} report={report} onDetail={setDetail} /><details className="panel spaced implementation-details"><summary>Full report · trades, agent attribution, coverage & assumptions</summary><Report report={report} onDetail={setDetail} /></details></>
-     : <Empty>
-       No report selected. Run a source check or select a contract-specific
-       dataset.
-      </Empty>
+     : !reportLoading && (reportId ?
+      <div className="report-retry" role="status">
+       <p>The selected report could not be loaded.</p>
+       <button className="ghost-button" onClick={() => { setNotice(""); setReportAttempt((attempt) => attempt + 1); }}>Retry report</button>
+      </div>
+      : <Empty>No report selected. Run a source check or select a contract-specific dataset.</Empty>)
      }
     </>
    }
 
-   {detail && (
-    <div className="drawer-backdrop" onClick={() => setDetail(null)}>
-     <aside
-      role="dialog"
-      aria-modal="true"
-      aria-label="Audit details"
-      className="drawer"
-      onClick={(e) => e.stopPropagation()}
-     >
+   </div>
+   {tab === "monitor" && <details className="panel spaced workspace-disclosure system-details">
+    <summary>System &amp; risk details <small>{online ? data?.readiness?.entry_ready ? "Entry checks available" : `Entries blocked · ${data?.readiness?.entry_blockers?.[0] || "Readiness unavailable"}` : "Offline"} · Paper only</small></summary>
+    <div className="disclosure-content">
+     <p><strong>Entry readiness: {data?.readiness?.entry_ready ? "Ready for candidate evaluation" : "Blocked"}</strong> · {(data?.readiness?.entry_blockers || []).join(" · ")}</p>
+     <p>Exit capability: {data?.readiness?.exit_status || "Unknown"}</p>
+     {(data?.readiness?.positions || []).filter((p: Data) => p.pending).map((p: Data) => <p key={p.position_id}>Pending exit · {p.contract_id} · {p.pending.reason} · Requested {p.pending.first_requested_at} · {p.pending.remaining_quantity} remaining · {p.pending.attempts} attempts · {p.pending.last_error || p.pending.status}</p>)}
+     <div className="compact-risk-strip">
+      <span>Correlated open-risk cap <strong>{money(data?.risk?.max_correlated_risk_rupees)}</strong></span>
+      <span>Remaining loss allocation <strong>{money(account.remaining_loss_allocation)}</strong></span>
+      <span>Entry cutoff <strong>{data?.risk?.entry_cutoff || "—"} IST</strong></span>
+     </div>
+     <p>Exit requests stay pending when executable quotes are unavailable.</p>
+     <p>Telegram: {data?.telegram?.enabled ? data.telegram.configured ? data.telegram.worker_alive ? "Running" : "Worker stopped" : "Credentials missing" : "Disabled"}{data?.telegram?.last_error ? ` · ${data.telegram.last_error}` : ""}</p>
+    </div>
+   </details>}
+   {detail && <AuditDrawer detail={detail} onClose={() => setDetail(null)} />}
+  </main>
+ );
+}
+
+function AuditDrawer({ detail, onClose }: { detail: Data; onClose: () => void }) {
+ const dialog = useRef<HTMLDialogElement>(null);
+ useEffect(() => {
+  const element = dialog.current!;
+  const trigger = document.activeElement as HTMLElement | null;
+  const previousOverflow = document.body.style.overflow;
+  element.showModal();
+  document.body.style.overflow = "hidden";
+  return () => {
+   element.close();
+   document.body.style.overflow = previousOverflow;
+   if (trigger?.isConnected) trigger.focus({ preventScroll: true });
+  };
+ }, []);
+ return (
+    <dialog ref={dialog} className="drawer-backdrop" aria-label="Audit details"
+     onCancel={(event) => { event.preventDefault(); onClose(); }}
+     onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+     <aside className="drawer">
       <button
        className="close-button"
        aria-label="Close details"
-       onClick={() => setDetail(null)}
+       onClick={onClose}
       >
        ×
       </button>
@@ -741,14 +637,32 @@ function App() {
       {detail.message && <div className="drawer-block"><strong>{detail.status || "Job details"}</strong><p>{detail.message}</p>{detail.config && <p>{detail.config.from} → {detail.config.to} · {detail.config.symbols?.join(" + ")}</p>}</div>}
       {detail.label && <div className="drawer-block"><strong>{detail.status}</strong><p>{detail.label}</p><small>{detail.event_id ? `Recorded event: ${detail.event_id}` : "No event recorded for this stage"}</small></div>}
       <AuditDetails detail={detail} />
+      {detail.decision_review && <div className="drawer-block">
+       <h3>Coordinator checks</h3>
+       <p>{detail.decision_review.version} · {stamp(detail.decision_review.evaluated_at)}</p>
+       <p>{detail.decision_review.reason}</p>
+       {Object.entries(detail.decision_review.checks || {}).map(([name, value]) => {
+        const check = value as Data;
+        return <p key={name}><strong>{name.replace(/_/g, " ")} · {check.status}</strong><br />{check.reason}</p>;
+       })}
+       <h3>Specialist availability</h3>
+       {Object.entries(detail.decision_review.agents || {}).map(([name, value]) => {
+        const agent = value as Data;
+        return <p key={name}><strong>{name} · {agent.status}</strong><br />{agent.task}</p>;
+       })}
+      </div>}
+      {detail.evaluation?.task && <div className="drawer-block">
+       <h3>Assigned task and current evidence</h3>
+       <p>{detail.evaluation.task}</p>
+       <p>{detail.evaluation.status} · {detail.evaluation.required ? "Required entry check" : "Context or research role"}</p>
+       <pre>{JSON.stringify(detail.evaluation.evidence, null, 2)}</pre>
+      </div>}
       <details className="drawer-block">
        <summary>All recorded fields / raw evidence</summary>
        <pre>{JSON.stringify(detail, null, 2)}</pre>
       </details>
      </aside>
-    </div>
-   )}
-  </main>
+    </dialog>
  );
 }
 
@@ -802,12 +716,13 @@ function ArchiveManifest({ id }: Data) {
 }
 
 function BacktestForm({ defaults, datasets, disabled, onRun }: Data) {
- const [source, setSource] = useState("dhan");
+ const [source, setSource] = useState("observed");
  const [dataset, setDataset] = useState("");
  const [strategyMode, setStrategyMode] = useState("portfolio");
+ const [optionScreen, setOptionScreen] = useState("option-buyer-v1");
 
  const [underlying, setUnderlying] = useState("PARALLEL");
- const [years, setYears] = useState("5");
+ const [years, setYears] = useState("days:7");
 
  const [from, setFrom] = useState("");
  const [to, setTo] = useState("");
@@ -832,7 +747,7 @@ function BacktestForm({ defaults, datasets, disabled, onRun }: Data) {
    <div className="section-heading">
     <div>
      <div className="eyebrow">
-      FIXED ONE-MINUTE STRATEGY / NO MANUAL CONTRACT PICKS
+      CAUSAL REPLAY / ONE SHARED PAPER ACCOUNT
      </div>
      <h2>Backtest lab</h2>
     </div>
@@ -844,9 +759,10 @@ function BacktestForm({ defaults, datasets, disabled, onRun }: Data) {
      e.preventDefault();
      onRun({
       source,
+      ...(source === "observed" ? {strategy_mode: "autonomous"} : {}),
       ...(source === "dhan" ? {estimate_missing_exits:estimateExits,estimate_haircut:Number(estimateHaircut)} : {}),
       dataset,
-      ...(source === "csv" ? { strategy_mode: strategyMode } : {}),
+      ...(source === "csv" ? { strategy_mode: strategyMode, option_screen: optionScreen } : {}),
       underlying,
       ...(years === "custom" ? { from, to }
       : years.startsWith("days:") ? { days: Number(years.split(":")[1]) }
@@ -867,13 +783,22 @@ function BacktestForm({ defaults, datasets, disabled, onRun }: Data) {
       value={source}
       onChange={(e) => setSource(e.target.value)}
      >
+      <option value="observed">Active autonomous policy · archived quotes and OI</option>
       <option value="dhan">Dhan rolling candles · estimated research</option>
       <option value="csv">Sourced contract CSV</option>
      </select>
     </label>
 
+    {source === "observed" && <p className="research-note">Uses saved responses through the active paper selector and broker. Missing sessions, depth, contract candles or fee receipts remain unavailable; partial runs do not establish a complete result.</p>}
+
     {source === "dhan" && <label className="control">Missing exit prices<select aria-label="Missing exit price mode" value={estimateExits ? "estimate" : "strict"} onChange={e=>setEstimateExits(e.target.value==="estimate")}><option value="strict">Observed data only</option><option value="estimate">Exploratory estimated exit</option></select></label>}
     {source === "dhan" && estimateExits && <label className="control">Exit price reduction<select aria-label="Estimated exit haircut" value={estimateHaircut} onChange={e=>setEstimateHaircut(e.target.value)}><option value="0">0% · prior price sensitivity</option><option value="0.05">5% · scenario assumption</option><option value="0.10">10% · higher loss sensitivity</option></select><small>Previous minute only. No learning from this run.</small></label>}
+    {source === "csv" && <label className="control">Option screen
+     <select aria-label="Option screen" value={optionScreen} onChange={e=>setOptionScreen(e.target.value)}>
+      <option value="option-buyer-v1">Current screen · observed Greeks and depth required</option>
+      <option value="legacy">Legacy comparison · does not validate current trading</option>
+     </select>
+    </label>}
     {source === "csv" && (
      <label className="control">
       Strategy
@@ -1063,6 +988,7 @@ function Report({ report, onDetail }: Data) {
  const valid = report.quality === "verified";
  const research = report.quality === "research";
  const netResearch = report.quality === "research_net";
+ const autonomousReplay = report.source === "autonomous_observed_quote_replay";
  const invalidated = report.status === "invalidated";
 
  const [cache, setCache] = useState<Data | null>(null);
@@ -1072,11 +998,6 @@ function Report({ report, onDetail }: Data) {
    .then(setCache)
    .catch(() => setCache(null));
  }, [report.run_id]);
-
- const factor =
-  m.profit_factor == null ?
-   `— (${m.profit_factor_status || "unavailable"})`
-  : Number(m.profit_factor).toFixed(3);
 
  return (
   <>
@@ -1089,7 +1010,7 @@ function Report({ report, onDetail }: Data) {
       : invalidated ?
        "Invalidated synthetic option report"
       : netResearch ?
-       "Estimated net research · current-lot scenario"
+       autonomousReplay ? "Archived autonomous replay · estimated fees" : "Estimated net research · current-lot scenario"
       : research ?
        "Gross research · current-lot scenario"
       : "Data quality blocked"}
@@ -1117,6 +1038,15 @@ function Report({ report, onDetail }: Data) {
     <Opportunities rows={report.opportunities} onDetail={onDetail} />
    )}
 
+   {report.decision_blockers?.length > 0 && <section className="panel spaced">
+    <Head title="Recorded entry blockers" kicker="DECISION HISTORY / INCLUDING EARLIER DATA WAITS" />
+    <p>Counts are recorded decision checks, including repeated checks of the same candidate. They are not trades or independent opportunities.</p>
+    {report.data_blocked_candidates != null && <p>{report.data_blocked_candidates} distinct candidates encountered data gaps; {report.unresolved_data_blocked_candidates ?? "—"} remained unfilled. A later expired setup does not erase an earlier data wait.</p>}
+    {report.decision_blockers.map((row: Data) => <button className="stream-row" key={row.reason} onClick={() => onDetail(row)}>
+     <div className="stream-body"><strong>{row.reason}</strong><p>{row.checks} checks · {stamp(row.first_at)} → {stamp(row.last_at)}</p></div><span>Details ›</span>
+    </button>)}
+   </section>}
+
    {research &&
     !["rolling-research-v3", "orb-retest-rolling-v1"].includes(
      report.replay_version,
@@ -1130,7 +1060,7 @@ function Report({ report, onDetail }: Data) {
 
    <section className="panel spaced">
     <Head
-     title="What this run establishes"
+     title="Research validation & local data"
      kicker="PERFORMANCE / LEARNING / LOCAL DATA"
      right={
       <button
@@ -1148,18 +1078,6 @@ function Report({ report, onDetail }: Data) {
      }
     />
     <Empty>
-     <p>
-      {valid ?
-       `Net simulation outcome: ${money(m.total_pnl)}. This is historical evidence, not a daily profit guarantee.`
-      : invalidated ?
-       "This report used synthetic option prices. Its performance and learning claims are invalid; the original record is retained for audit."
-      : netResearch && report.status === "research_complete" ?
-       `Estimated net scenario: ${money(m.total_pnl)}. Fees are assumptions; this is not a validated execution replay or proven edge.`
-      : research && report.status === "research_complete" ?
-       `Gross current-lot scenario: ${money(m.gross_pnl)} across ${m.sessions} observed sessions. After-charges profitability is not established.`
-      : "The selected range has incomplete evidence. Partial trades are shown, but full-range profitability is not established."
-      }
-     </p>
      <p>
       Agent improvement:{" "}
       {(
@@ -1185,26 +1103,26 @@ function Report({ report, onDetail }: Data) {
    {report.coverage?.length > 0 && (
     <section className="panel spaced">
      <Head
-      title="Observed historical API coverage"
+      title={autonomousReplay ? "Archived session input coverage" : "Observed historical API coverage"}
       kicker={
        research ?
         "REQUESTED-RANGE CHUNKS / CLICK FOR GAPS AND LOT PROVENANCE"
        : "SOURCE COVERAGE"
       }
      />
-     {report.coverage.map((c: Data) => (
+     {report.coverage.map((c: Data, index: number) => (
       <button
        className="stream-row"
-       key={`${c.symbol}:${c.probe_from}`}
+       key={`${c.symbol}:${c.contract_id || "rolling"}:${c.day || c.probe_from}:${index}`}
        onClick={() => onDetail(c)}
       >
        <div className="stream-body">
         <strong>
-         {c.symbol} · {c.candles} candles returned
+         {autonomousReplay ? `${c.date} · ${c.underlying_observations ?? "—"} underlying observations` : <>{c.symbol} · {c.contract_id ? `${c.contract_id} · ${c.observed_minutes ?? "—"} observed minutes` : `${c.candles ?? "—"} candles returned`}</>}
         </strong>
         <p>
-         {c.probe_from} → {c.probe_to} · {c.api_access} ·{" "}
-         {c.expiry_cycle || "No cycle returned"}
+         {autonomousReplay ? `${c.full_sessions ? "Complete" : "Incomplete"} session inputs · Quote observations are not candles or verified fills` : c.contract_id ? `${c.day} · ${c.missing_minutes ?? "—"} missing minutes · Contract-specific candles` :
+          `${c.probe_from} → ${c.probe_to} · ${c.api_access} · ${c.expiry_cycle || "No cycle returned"}`}
         </p>
        </div>
        <span>Details ›</span>
@@ -1213,102 +1131,17 @@ function Report({ report, onDetail }: Data) {
     </section>
    )}
 
-   {research && (
-    <>
-     <section className="metric-grid">
-      <Kpi
-       label="Gross scenario P&L"
-       value={money(m.gross_pnl)}
-       sub="Current lot sizes; before fees and slippage"
-      />
-      <Kpi
-       label="Net P&L"
-       value="Unavailable"
-       sub="Dated charges and historical metadata missing"
-      />
-      <Kpi
-       label="Gross profit factor"
-       value={factor}
-       sub="Three decimals; not net profitability"
-      />
-      <Kpi
-       label="Gross win rate / trades"
-       value={`${pct(m.win_rate)} / ${m.trades}`}
-       sub="Completed research positions"
-      />
-      <Kpi
-       label="Gross max drawdown"
-       value={money(m.max_drawdown)}
-       sub="Optimistic candle-marked scenario"
-      />
-      <Kpi
-       label="Partial realized gross"
-       value={money(m.partial_realized_gross_pnl)}
-       sub="Excludes unresolved positions; not full performance"
-      />
-     </section>
-     {!report.unresolved?.length && (
-      <div className="chart-grid">
-       <Chart title="Gross scenario equity" points={report.equity || []} />
-       <Chart title="Gross scenario drawdown" points={report.drawdown || []} />
-      </div>
-     )}
-    </>
-   )}
-
-   {(valid || netResearch) && (
-    <>
-     <section className="metric-grid">
-      <Kpi
-       label="Net P&L"
-       value={money(m.total_pnl)}
-       sub="After dated estimated charges"
-      />
-      <Kpi label="Profit factor" value={factor} sub="Three decimal places" />
-      <Kpi
-       label="Win rate / trades"
-       value={`${pct(m.win_rate)} / ${m.trades}`}
-       sub="Completed positions"
-      />
-      <Kpi
-       label="Max drawdown"
-       value={money(m.max_drawdown)}
-       sub="Marked-to-market equity"
-      />
-
-      <Kpi
-       label="Average daily P&L"
-       value={money(m.average_daily_pnl)}
-       sub={`${m.sessions} observed sessions`}
-      />
-      <Kpi
-       label="Target month rate"
-       value={pct(m.target_month_rate)}
-       sub={`${money(m.monthly_target)} gross target; not guaranteed`}
-      />
-      <Kpi
-       label="Worst session"
-       value={money(m.worst_day)}
-       sub={`${m.no_trade_days} no-trade sessions`}
-      />
-      <Kpi
-       label="Total charges"
-       value={money(m.total_charges)}
-       sub="Entry + exit breakdown per trade"
-      />
-     </section>
-
-     <div className="chart-grid">
-      <Chart title="Equity" points={report.equity || []} />
-      <Chart title="Drawdown" points={report.drawdown || []} />
-     </div>
-    </>
-   )}
+   {(valid || netResearch) && <section className="metric-grid">
+    <Kpi label="Average daily P&L" value={money(m.average_daily_pnl)} sub={`${m.sessions} observed sessions`} />
+    <Kpi label="Target month rate" value={pct(m.target_month_rate)} sub={`${money(m.monthly_target)} ${m.monthly_target_basis || "unspecified basis"} target · observed sessions only; not guaranteed`} />
+    <Kpi label="Worst session" value={money(m.worst_day)} sub={`${m.no_trade_days} no-trade sessions`} />
+   </section>}
+   {research && <Kpi label="Partial realized gross" value={money(m.partial_realized_gross_pnl)} sub="Excludes unresolved positions; not full performance" />}
 
    <section className="panel spaced">
     <Head
      title="Agent performance in this run"
-     kicker="P&L ATTRIBUTION IS NOT PROOF OF LEARNING"
+     kicker="EVALUATIONS / OUTCOMES / VALIDATION"
     />
     <div className="table-wrap">
      <table>
@@ -1319,7 +1152,6 @@ function Report({ report, onDetail }: Data) {
         <th>Passed</th>
         <th>Rejected</th>
         <th>Outcomes</th>
-        <th>Attributed P&L</th>
         <th>Validation</th>
        </tr>
       </thead>
@@ -1340,13 +1172,6 @@ function Report({ report, onDetail }: Data) {
           <td>{a.passed ?? "—"}</td>
           <td>{a.rejected ?? "—"}</td>
           <td>{a.outcomes}</td>
-          <td>
-           {valid || netResearch ?
-            money(a.pnl)
-           : research ?
-            `${money(a.pnl)} gross only`
-           : "Not validated"}
-          </td>
           <td>{learning?.validation_status || "Not evaluated"}</td>
          </tr>
         );
@@ -1356,8 +1181,7 @@ function Report({ report, onDetail }: Data) {
     </div>
     <p className="research-note">
      Click an agent for contexts, proposed changes and baseline/candidate
-     validation. The same trade's P&L is attributed to each participating
-     filter; these values must not be summed.
+     validation.
     </p>
    </section>
 
@@ -1503,153 +1327,6 @@ function Opportunities({ rows, onDetail }: Data) {
      Next
     </button>
    </div>
-  </section>
- );
-}
-
-function Agents({ rows, policies, onDetail }: Data) {
- return (
-  <section className="panel spaced">
-   <Head
-    title="Agent activity & learning evidence"
-    kicker="AUDITABLE FILTERS / VALIDATED POLICY CHANGES"
-   />
-   <div className="agent-activity-grid">
-    {rows.map((a: Data) => (
-     <article className="agent-card" key={a.agent}>
-      <div className="agent-card-head">
-       <strong>{a.agent}</strong>
-       <span className={a.status === "REJECTED" ? "negative" : "accent"}>
-        {a.status}
-       </span>
-      </div>
-      <p className="agent-role">{a.role}</p>
-      <p className="agent-action">{a.last_action}</p>
-      <div className="agent-policy">
-       <span>Saved policy v{policies[a.agent]?.version || 0}</span>
-       <span>{a.validation_status}</span>
-      </div>
-      <div className="agent-stats">
-       <span>
-        {a.candidates}
-        <small>recent events</small>
-       </span>
-       <span>
-        {a.research_outcomes ?? a.outcomes}
-        <small>
-         {a.research_outcomes != null ?
-          "research outcomes"
-         : "verified outcomes"}
-        </small>
-       </span>
-       <span>
-        {a.research_losses ?? a.losses}
-        <small>
-         {a.research_losses != null ?
-          "gross research losses"
-         : "verified losses"}
-        </small>
-       </span>
-      </div>
-      <div className="learning-state">
-       <div>
-        <strong>{a.learning_status?.replaceAll("_", " ")}</strong>
-        <small>{a.learning_summary}</small>
-       </div>
-      </div>
-      <button className="ghost-button agent-detail" onClick={() => onDetail(a)}>
-       Inspect evidence
-      </button>
-     </article>
-    ))}
-   </div>
-   <p className="agent-activity-note">
-    Until a candidate passes separate training, validation and untouched-test
-    replays, these are P&L-attributing filters, not proven self-learning agents.
-    Paper outcomes are recorded; they do not automatically prove improvement.
-    Risk caps never learn to increase themselves.
-   </p>
-  </section>
- );
-}
-
-function LearningRegistry({ rows, busy, onReview }: Data) {
- const [reviewer, setReviewer] = useState("");
-
- const pending = rows.filter(
-  (r: Data) => r.validation_status === "AWAITING_REVIEW",
- );
-
- return (
-  <section className="panel spaced">
-   <Head
-    title="Learning registry"
-    kicker="CHALLENGER / VALIDATION / HUMAN REVIEW"
-   />
-   <p className="research-note">
-    A validated challenger is still inactive until a named reviewer approves it.
-    Approval applies from the next available session; it cannot change risk,
-    sizing or protection rules.
-   </p>
-   {pending.length ?
-    <>
-     <label className="control">
-      Reviewer name
-      <input
-       aria-label="Learning reviewer name"
-       value={reviewer}
-       onChange={(e) => setReviewer(e.target.value)}
-       placeholder="Enter reviewer name"
-      />
-     </label>
-     {pending.map((candidate: Data) => (
-      <div
-       className="job-row"
-       key={`${candidate.agent}:${candidate.version}:${candidate.source_run_id}`}
-      >
-       <div>
-        <strong>
-         {candidate.agent} · candidate v{candidate.version}
-        </strong>
-        <small>
-         {candidate.blocked_value ?
-          `Exclude ${candidate.blocked_value}`
-         : `Allow ${candidate.allowed_value || "candidate context"}`}{" "}
-         · validation passed, review required
-        </small>
-       </div>
-       <div className="actions">
-        <button
-         className="ghost-button"
-         disabled={busy || !reviewer}
-         onClick={() =>
-          onReview(
-           `${candidate.source_run_id}:${candidate.agent}`,
-           "approve",
-           reviewer,
-          )
-         }
-        >
-         Approve next session
-        </button>
-        <button
-         className="ghost-button"
-         disabled={busy || !reviewer}
-         onClick={() =>
-          onReview(
-           `${candidate.source_run_id}:${candidate.agent}`,
-           "reject",
-           reviewer,
-          )
-         }
-        >
-         Reject
-        </button>
-       </div>
-      </div>
-     ))}
-    </>
-   : <Empty>No validated candidates awaiting review.</Empty>}
   </section>
  );
 }
@@ -1970,7 +1647,7 @@ function PerformanceBreakdown({ report, onDetail }: Data) {
        <th>Sessions</th>
        <th>Trades</th>
        <th>{research ? "Gross scenario" : "Net P&L"}</th>
-       <th>After-charges result</th>
+       {research && <th>After-charges result</th>}
       </tr>
      </thead>
      <tbody>
@@ -1979,8 +1656,8 @@ function PerformanceBreakdown({ report, onDetail }: Data) {
         <td>{g.period}</td>
         <td>{g.sessions}</td>
         <td>{g.trades}</td>
-        <td>{money(research ? g.gross : g.net)}</td>
-        <td>{g.netKnown ? money(g.net) : "Unavailable"}</td>
+        <td>{research ? money(g.gross) : g.netKnown ? money(g.net) : "Unavailable"}</td>
+        {research && <td>{g.netKnown ? money(g.net) : "Unavailable"}</td>}
        </tr>
       ))}
      </tbody>
@@ -2002,6 +1679,21 @@ function AuditDetails({ detail: d }: Data) {
  return (
   <>
    <AgentLessons rows={learning?.metadata?.lessons || d.lessons || []} />
+   {d.summary && <div className="drawer-block">
+    <h3>Recorded decision · {d.status || "Status unavailable"}</h3>
+    <p><strong>{d.summary}</strong></p>
+    <p>{d.symbol || "SYSTEM"} · {stamp(d.timestamp)}</p>
+    <p>Context: {d.context || "No context recorded"}</p>
+    {d.evaluation && <><h3>Evaluation inputs</h3><dl className="decision-evaluation">{Object.entries(d.evaluation).map(([key, value]) => <div key={key}><dt>{key.replace(/_/g, " ")}</dt><dd>{typeof value === "object" ? JSON.stringify(value) : String(value ?? "Unavailable")}</dd></div>)}</dl></>}
+   </div>}
+   {d.source_run_id && d.version != null && d.validation_status && <div className="drawer-block">
+    <h3>Candidate review record</h3>
+    <p>Candidate v{d.version} · {d.validation_status}</p>
+    <p>{d.blocked_value ? `Exclude ${d.blocked_value}` : `Allow ${d.allowed_value || "candidate context"}`}</p>
+    <p>Reviewer: {d.reviewed_by || "Not reviewed"}<br />Reviewed: {d.reviewed_at ? stamp(d.reviewed_at) : "Not recorded"}<br />Effective from: {d.effective_from || "Not scheduled"}</p>
+    {d.review_reason && <p>Recorded review note: {d.review_reason}</p>}
+    <p>An approval record does not confirm that this policy is active in the current session or that it improves performance.</p>
+   </div>}
    {(d.delta != null ||
     d.gamma != null ||
     d.theta != null ||
@@ -2110,7 +1802,7 @@ function AuditDetails({ detail: d }: Data) {
     </div>
    )}
 
-   {d.agent && (
+   {d.agent && !d.summary && !d.decision_review && !d.evaluation?.task && !(d.source_run_id && d.version != null && d.validation_status) && (
     <div className="drawer-block">
      <h3>Evidence of improvement</h3>
      <p>
@@ -2195,48 +1887,6 @@ function AgentLessons({ rows }: Data) {
  );
 }
 
-function Chart({ title, points }: Data) {
- const values = points
-  .map((p: Data) => p.value)
-  .filter((v: number) => Number.isFinite(v));
-
- const lo = Math.min(...values);
- const hi = Math.max(...values);
-
- return (
-  <section className="panel chart-panel">
-   <Head title={title} kicker="OBSERVED REPLAY EQUITY" />
-   {values.length ?
-    <>
-     <div className="chart-axis">
-      {money(hi)} / {money(lo)}
-     </div>
-     <svg
-      className="line-chart"
-      viewBox="0 0 100 100"
-      preserveAspectRatio="none"
-      role="img"
-      aria-label={title}
-     >
-      <polyline
-       fill="none"
-       stroke={title === "Equity" ? "#32d583" : "#ff7d8b"}
-       strokeWidth="1.5"
-       vectorEffect="non-scaling-stroke"
-       points={values
-        .map(
-         (v: number, i: number) =>
-          `${(i / Math.max(values.length - 1, 1)) * 100},${hi === lo ? 50 : 90 - ((v - lo) / (hi - lo)) * 80}`,
-        )
-        .join(" ")}
-      />
-     </svg>
-    </>
-   : <Empty>No chart data.</Empty>}
-  </section>
- );
-}
-
 function PaperPnlPanel({ account, trades }: Data) {
  const daily = new Map<string, number>();
  for (const [day, value] of Object.entries(account.daily_results || {})) {
@@ -2274,7 +1924,7 @@ function PaperPnlPanel({ account, trades }: Data) {
   <section className="panel spaced paper-pnl-panel">
    <Head
     title="Paper Trading P&L"
-    kicker="OBSERVED PAPER ACCOUNT / NET OF RECORDED CHARGES"
+    kicker="NET OF ESTIMATED CHARGES"
     right={<span className="paper-pnl-date">Through {account.session_date || "current session"}</span>}
    />
    <div className="paper-pnl-layout">
@@ -2282,11 +1932,11 @@ function PaperPnlPanel({ account, trades }: Data) {
      <div className="paper-pnl-chart-head">
       <div>
        <span>Cumulative net P&amp;L</span>
-       <strong className={tone(cumulative)}>{money(cumulative)}</strong>
+       <strong className={tone(cumulative)}><TerminalValue value={cumulative}>{money(cumulative)}</TerminalValue></strong>
       </div>
       <div>
        <span>Account equity</span>
-       <strong>{money(account.equity)}</strong>
+       <strong><TerminalValue value={account.equity}>{money(account.equity)}</TerminalValue></strong>
       </div>
      </div>
      <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="Paper trading cumulative net profit and loss">
@@ -2312,6 +1962,11 @@ function PaperPnlPanel({ account, trades }: Data) {
      </p>
     </div>
     <div className="paper-pnl-numbers">
+     {account.monthly_progress && <div className="paper-monthly-target">
+      <span>Monthly net target · {account.monthly_progress.month}</span>
+      <strong>{money(account.monthly_progress.estimated_liquidation_net)} / {money(account.monthly_progress.target)}</strong>
+      <small>{account.monthly_progress.estimated_liquidation_net == null ? "Awaiting executable position valuation" : `${money(account.monthly_progress.remaining)} remaining after charges`} · reporting goal, not a trade quota</small>
+     </div>}
      {[
       ["Available cash", money(account.cash), ""],
       ["Current session net", money(sessionValue), tone(sessionValue)],

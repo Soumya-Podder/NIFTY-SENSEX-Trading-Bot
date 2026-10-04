@@ -1,10 +1,37 @@
 # Options Paper Lab
 
-The active paper engine now evaluates opening-range retest, trend pullback and
-range rejection with one shared selector. See [the strategy specification](MULTI_STRATEGY_PAPER.md)
-for exact rules, evidence labels and execution limits. The existing historical
-backtests remain scoped to their recorded baseline; they do not validate this
-new combined paper selector.
+The active mode is now `PAPER_STRATEGY_MODE=autonomous` (`autonomous-paper-v1`).
+It independently compares trend continuation, opening-range retest, trend
+pullback and range rejection on both indices, requires causal support/resistance
+and fresh full returned fixed-contract OI context, sizes whole lots within the
+shared ₹30,000 account and ₹650 risk cap, and manages HOLD/EXIT decisions alongside
+the independent protective worker. The daily hard halt is ₹1,200. The monthly
+₹18,000 net objective is reported without forcing entries or promising a return.
+
+Archived-input backtests run this same engine in an isolated virtual account;
+missing quotes/OI/Greeks/fees stay visible as partial evidence. Completed paper
+episodes feed separate paper research learning with chronological holdouts and
+independent full-account replay before a next-session entry filter can activate.
+The detailed current specification is [the implementation plan](NIFTY_SENSEX_Implementation_Plan.md).
+There is no live order authority or automatic source-code rewriting.
+
+The modes and journaling described below remain available for legacy comparison.
+
+With `PAPER_STRATEGY_MODE=simple`, the active paper engine uses the versioned
+completed-bar trend continuation rule. It requires a one-to-four ATR structural
+invalidation, limits spread to 10% of the Delta-mapped premium stop distance,
+requires Greeks no older than 45 seconds, and ranks eligible NIFTY and SENSEX
+contracts by net reward per all-in planned risk. These are conservative paper
+filters, not a demonstrated profitable edge. The optional portfolio mode is
+documented in [the strategy specification](MULTI_STRATEGY_PAPER.md). Existing
+historical backtests do not reproduce the active simple engine's streaming depth
+and Delta checks.
+
+Every completed-bar candidate seen by the simple engine is journaled with its
+subscribed index and option quote observations in the project database, including
+signals blocked by an existing paper position. These records are labelled
+`OBSERVED_ONLY` and contain no hypothetical fill, exit or P&L. A journal write
+failure is shown as an advisory error and cannot stop exit management.
 
 Local NIFTY/SENSEX options-buying research and paper execution. There is **no live
 order authority**: both the API Live toggle and the broker order boundary reject it,
@@ -28,8 +55,17 @@ Verification:
 cd backend
 .venv\Scripts\python.exe -m pytest -q
 cd ../frontend
+npm test
 npm run build
 ```
+
+Frontend request tests use Node's built-in test runner and TypeScript stripping
+(Node 22.18+ or 24+). No additional test packages are required. Requests have a
+30-second deadline even when cancellable; switching reports discards older
+responses. A failed report can be retried without starting a new backtest.
+Paper trade history refreshes on exits, session changes and reconnection, and
+displays a warning if it cannot refresh. The audit drawer supports keyboard
+focus containment, Escape to close, and returning focus to its opener.
 
 ## Automatic operation and credential refresh
 
@@ -77,17 +113,22 @@ freshness gates, persistence checks and Risk Sentinel remain authoritative.
 
 - Entries start enabled when `PAPER_AUTOSTART=true`. The dashboard's paper toggle enables or pauses only the simulated broker; it never enables live order authority. The paper engine still applies fresh-data, session, contract, cash and risk gates.
 - One persistent ₹30,000 account shared by both indices; the current `.env` policy
-  permits one open position/lot across the shared account. NIFTY and SENSEX are
-  evaluated in parallel, but they do not bypass the shared position or risk authority.
+  permits one open position across the shared account and multiple whole lots only
+  when the combined cash, depth and ₹600 risk checks pass. NIFTY and SENSEX do not
+  bypass that shared authority.
 - Session 09:15–15:05 IST; the opening 15 minutes build the range. Entries stop
   at 14:30. The exit loop continues when entries are paused or the account is halted.
 - Current `.env` defaults: ₹600 maximum planned risk per trade, ₹600 same-direction
   correlated open-risk cap, ₹1,200 daily loss/hard halt, ₹1,000 planned-loss allocation
-  plus a ₹200 execution reserve, and a ₹20,000 monthly gross target. Charges and existing
+  plus a ₹200 execution reserve, and a ₹15,000 monthly net target after trading charges. Charges and existing
   exposure reduce capacity; these are configurable limits, not guarantees against
   gaps or a missing exit quote.
+- Entry selection requires option depth received within two seconds and an index
+  reference received within five seconds. The simple trend rule checks completed
+  one-minute bars and rejects an index quote more than one ATR beyond the signal
+  close. Every attempted fill rechecks the current quote, costs and total risk.
 - Closed one-minute index candles, automatic CALL/PUT from aligned setups, nearest
-  available expiry and liquid non-ATM options sized from current lot sizes and cash.
+  available non-expiry-day contracts including eligible ATM options, sized from current lot sizes and cash.
   Missing index volume stays missing: volume/VWAP setups are unavailable; price-only
   EMA setups can still be evaluated and are explicitly labelled.
 - Entries use observed ask/depth; exits observed bid/depth. Option depth comes
@@ -106,11 +147,25 @@ freshness gates, persistence checks and Risk Sentinel remain authoritative.
   are labelled last observed, not live. An exchange holiday calendar is not yet
   integrated; fresh quote and closed-bar gates prevent stale holiday entries.
 
-₹20,000 gross monthly is an average tracking target before charges and taxes, not
+₹15,000 net monthly is an average tracking target after trading charges, not
 an entry quota or promised outcome. The implementation does not establish that
 this is achievable. Paper results do not establish real execution performance.
 
 ## Historical backtests: data, calculation and limitations
+
+New dashboard, CLI and observed-session exact-contract runs share the paper settings
+snapshot (₹30,000 capital, ₹600 risk, ₹1,000 loss allocation + ₹200 reserve by default).
+The current option screen is the default for these entry points. Choose
+`--option-screen legacy` only for an explicitly labelled historical comparison.
+Historical candle files without timestamped Greeks and executable depth cannot
+validate the current buying screen; missing evidence stays blocked, not zero-profit
+performance. Full specialist-review and two-second execution parity remain unproven.
+Reports retain their own target/basis and policy snapshot; old reports are not rewritten.
+
+Monthly metrics now sum net session P&L. The dashboard shows monthly net progress;
+open positions use estimated liquidation value only when executable valuation is
+available. Exit analysis groups actual completed exits and holding periods rather
+than assuming that every nominal 2R target is realised.
 
 Backtest capital and per-trade risk accept positive finite values without an
 application-defined upper cap. Daily and correlated risk budgets can be overridden
@@ -198,9 +253,11 @@ TELEGRAM_BOT_TOKEN=your_bot_token
 TELEGRAM_CHAT_ID=your_chat_or_channel_id
 ```
 
-Telegram receives only confirmed simulated entry and exit fills. Every alert includes
-the locally calculated current paper-session P&L; exit alerts also include trade net P&L. Message
-delivery is asynchronous and never authorizes or blocks an order.
+Telegram sends one market-day start report at 09:15, confirmed simulated entry and
+exit messages, position/P&L updates approximately every two seconds only while a
+durably entered paper position is open, and one session report at 15:35. A no-trade
+report includes persisted rejection reasons. Start/end checkpoints survive restart.
+Message delivery is asynchronous and never authorizes or blocks an order.
 
 Use IST timestamps or timezone-qualified timestamps, ISO expiry/validity dates,
 CALL/PUT, prices/tick sizes in rupees, and actual historical lot sizes. Contract IDs
@@ -297,3 +354,36 @@ as P&L-attributing filters with a validation framework—not proven self-learnin
 - `GET /api/backtest/datasets`, `WS /api/ws`
 
 Bind locally. This is not a hardened multi-user deployment.
+
+## Chart replay and retained futures volume
+
+Open **Market charts → Replay**, select a saved market session in IST, and use
+Play/Pause, one-second steps, Next price update, the timeline, or Go to time. Playback supports
+1×–60× speed; candle-only sessions default to 60× (one saved minute per second).
+Follow cursor keeps the latest replay candle visible and can be disabled to pan.
+Switching timeframe or index retains the selected session clock. Return to live restores the normal chart polling. Replay reads local
+archives and never runs a strategy, places an order, or changes the paper account;
+the live paper engine continues separately.
+
+Valid recorded observations appear at their receive second. Completed historical
+minute candles and futures volume appear only at candle close, confirmed zones only
+after confirmation, and saved trade exits only after their recorded time. Where no
+valid observations exist, the UI explicitly uses candle-only playback. Missing or
+inconsistent timestamps are excluded; intraminute prices and volume are not invented.
+Original historical candle receipt times and complete exchange tick coverage are
+not established, so this is a visual reconstruction, not a strategy backtest.
+Reload archive refreshes the frozen session dataset and preserves the selected clock.
+Two session datasets are cached in memory for reuse across timeframes. Replay sends
+up to 200 prior chart candles as context; zone detection still uses the retained
+365-day history. The normal live chart retains its longer candle history.
+First loading a large archive can take longer than a normal chart refresh.
+
+Futures volume uses verified saved contracts across expiries. Each session uses the
+earliest unexpired retained contract with data for that day. Overlapping expiries
+are never summed, and missing minutes are not filled from a different contract.
+The chart labels the selected candle's contract and expiry, marks contract changes,
+and displays the actual retained coverage. This is a recorded contract series;
+it does not establish complete front-month history or one-year volume coverage.
+
+- `GET /api/market/chart/{symbol}?period=5m`
+- `GET /api/market/replay/{symbol}?day=YYYY-MM-DD&period=5m`

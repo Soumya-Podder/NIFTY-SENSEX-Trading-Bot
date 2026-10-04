@@ -34,8 +34,10 @@ option selling is implemented.
 
 ## Shared selector and protection
 
-Each index has up to 12 CALL and 12 PUT subscriptions. Fresh non-ATM options are
-ranked by the existing liquidity/contract filter. The selected contract's actual
+Each index has up to 12 CALL and 12 PUT subscriptions, including ATM. The
+`option-buyer-v1` screen requires fresh signed Delta, prefers absolute 0.45–0.60
+(0.30–0.45 only with an aligned trend), and limits spread to 2% of midpoint.
+See [the buying screen implementation](OPTION_BUYING_SCREEN.md). The selected contract's actual
 completed protection candle is requested on demand, rather than prefetching a
 different delta-ranked subset. A bounded full-session contract request is filtered
 to the exact retest/rejection minute because narrow timestamp requests were
@@ -60,14 +62,15 @@ The third metric is not expected profit or a win probability. At fewer than 30
 matching verified paper outcomes or 10 sessions, PAPER_COLLECT_EVIDENCE=true allows
 explicit observation. Once the sample is sufficient, an unsupported net edge is
 rejected. Outcomes are matched by portfolio version, strategy version, setup and
-regime; old ORB research outcomes are not mixed into the new portfolio.
+regime and option-screen version; old research outcomes are not mixed into the new screen.
 
 The winning offer is rechecked for session, signal age, quote age, unchanged
-prices/contract identity, current ATM classification, underlying invalidation,
+prices/contract identity, current Delta and midpoint spread, underlying invalidation,
 credential generation and atomic broker risk admission. A failed offer can be
 skipped; if no eligible offer remains, the system stays flat. One position/lot,
-the 300-rupee trade-risk budget, 650-rupee planned daily loss allocation, maximum
-three entries/two losses, reserves, cooldown and portfolio locks remain in force.
+the ₹600 trade-risk budget, ₹1,000 planned daily loss allocation plus ₹200 execution
+reserve, ₹1,200 hard daily halt, maximum three entries/two losses, cash reserve,
+cooldown and portfolio locks remain in force.
 
 ## Operation and audit
 

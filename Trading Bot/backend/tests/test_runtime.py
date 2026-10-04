@@ -11,6 +11,15 @@ from app.expectancy import ExpectancyEngine
 from tests.test_paper import plan_account,contract,quote,signal,enter
 
 
+def test_dhan_profile_validator_accepts_current_top_level_shape(monkeypatch):
+    import dhanhq
+    monkeypatch.setattr(dhanhq.DhanLogin,"user_profile",lambda *_:{
+        "dhanClientId":"test-client","tokenValidity":"2026-10-04 09:02:15.0",
+        "dataPlan":"Active","dataValidity":"2026-10-04 09:02:15.0"})
+    result=__import__('app.broker',fromlist=['DhanBroker']).DhanBroker('test-client','test-token').validate_access()
+    assert result=={"valid":True,"reason":None,"data_plan":"Active","data_validity":"2026-10-04 09:02:15.0"}
+
+
 def test_env_rotation_overrides_inherited_old_value(tmp_path,monkeypatch):
     path=tmp_path/'.env'
     monkeypatch.setenv('DHAN_ACCESS_TOKEN','expired-inherited-test-token')
@@ -81,6 +90,30 @@ def test_option_stream_requires_depth_and_explicit_freshness():
     assert not quote_is_fresh({'quote_update_timestamp':None,'exchange_timestamp':q['timestamp'],'source':'dhan_quote'})
 
 
+def test_execution_snapshot_returns_underlying_and_options_atomically():
+    feed=DhanMarketData('test','test','NIFTY,SENSEX')
+    feed.latest['NIFTY']={'symbol':'NIFTY','ltp':24000}
+    feed.option_quotes={'nifty-contract':{'symbol':'NIFTY','ask':100},'sensex-contract':{'symbol':'SENSEX','ask':200}}
+    snapshot=feed.execution_snapshot('NIFTY')
+    assert snapshot['underlying']['ltp']==24000
+    assert set(snapshot['options'])=={'nifty-contract'}
+
+
+def test_sparse_depth_preserves_chain_oi_but_explicit_zero_is_not_replaced():
+    feed=DhanMarketData('test','test','NIFTY,SENSEX')
+    c={**contract(),'security_id':'999','exchange':'NSE','oi':100,'volume':200,
+       'delta':.5,'greeks_observed_at':'2026-09-04T10:00:00+05:30'}
+    feed.subscribe_options([c])
+    packet={'security_id':999,'exchange_segment':2,'type':'Full Data','LTP':'100',
+            'depth':[{'bid_price':'99','ask_price':'100','bid_quantity':20,'ask_quantity':30}]}
+    feed._on_message(None,packet)
+    q=feed.executable_quotes()[c['contract_id']]
+    assert q['oi']==100 and q['volume']==200 and q['greeks_observed_at']==c['greeks_observed_at']
+    feed._on_message(None,{**packet,'OI':0,'volume':0})
+    q=feed.executable_quotes()[c['contract_id']]
+    assert q['oi']==0 and q['volume']==0
+
+
 def test_stream_rotation_drops_old_prices_and_old_callbacks(monkeypatch):
     feed=DhanMarketData('test','old','NIFTY')
     feed.latest={'NIFTY':{'ltp':10}};feed.option_quotes={'old':{'ask':2}}
@@ -97,7 +130,8 @@ def test_first_paper_trade_collects_evidence_and_exits_at_1505(tmp_path,monkeypa
     broker,store,clock=plan_account(tmp_path)
     settings=Settings(_env_file=None,paper_collect_evidence=True,session_exit='15:05')
     engine=PaperEngine(settings,store,None,broker)
-    c=contract();q={**quote(c,clock),'oi':10000,'volume':1000,'is_atm':False}
+    c=contract();q={**quote(c,clock),'oi':10000,'volume':1000,'is_atm':False,
+                    'delta':.5,'greeks_observed_at':clock['now'].isoformat()}
     s={**signal(),'symbol':'NIFTY','option_type':'CALL','strategy_version':'orb-retest-v1',
        'retest_timestamp':clock['now'].isoformat(),'invalidation':24000}
     engine.protections[(s['id'],c['contract_id'])]={**c,'low':90}
@@ -121,7 +155,8 @@ def test_evidence_mode_does_not_override_negative_supported_edge(tmp_path,monkey
     c=contract();s={**signal(),'symbol':'NIFTY','option_type':'CALL','strategy_version':'orb-retest-v1','retest_timestamp':clock['now'].isoformat()}
     engine.protections[(s['id'],c['contract_id'])]={**c,'low':90}
     monkeypatch.setattr(ExpectancyEngine,'evaluate_net',lambda *a:{'status':'REJECTED','reason':'Net edge is not supported by session-clustered evidence'})
-    engine._enter(s,{c['contract_id']:{**quote(c,clock),'oi':10000,'volume':1000}},clock['now'])
+    engine._enter(s,{c['contract_id']:{**quote(c,clock),'oi':10000,'volume':1000,
+                    'delta':.5,'greeks_observed_at':clock['now'].isoformat()}},clock['now'])
     assert broker.snapshot()['open_positions']==0
     assert any(e['agent']=='EV' and e['status']=='REJECTED' for e in store.list_records('events'))
 
