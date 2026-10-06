@@ -7,6 +7,7 @@ from .strategy_portfolio import STRATEGIES, closed_session, evaluate_completed_b
 from .simple_paper import trend_signal
 from .market_structure import analyze_structure, structure_evidence
 from .pipeline import plan_protection
+from .option_screen import describe as option_screen_policy
 
 VERSION = "autonomous-paper-v1"
 STRATEGY_SPECS = (
@@ -41,6 +42,7 @@ def evaluate_market(frame, now, symbol, structure=None):
             row["reason"] = "Trend is flat, contradictory or extended beyond two ATR from EMA 21"
         if trend:
             trend.update(strategy_id="trend_continuation", underlying_entry=float(last.close),
+                         max_greeks_age_seconds=option_screen_policy()["max_greek_age_seconds"],
                          retest_timestamp=bars.iloc[-2].timestamp.isoformat(), feature_row=rows[0]["feature_row"],
                          evidence=["completed_continuation", "aligned_ema9_21", "adx_at_least_20", "bounded_extension"])
             signals.append(trend)

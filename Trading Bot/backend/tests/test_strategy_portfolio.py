@@ -144,7 +144,7 @@ def test_exact_selected_contract_is_queued_and_missing_candle_retries(tmp_path,m
     assert not e.protection_results[key]["candle"]
     e.protection_results[key]["retry_after"]=0
     good={"timestamp":pd.Timestamp(s["retest_timestamp"]),"open":95.,"high":99.,"low":90.,"close":96.}
-    e.gateway.contract_candles=lambda *args:pd.DataFrame([good])
+    e.gateway.contract_candles=lambda *args,**kwargs:pd.DataFrame([good])
     e._request_protection(s,c);e.prepare_protection(key,e.protection_requests[key])
     result,reason=e._request_protection(s,c)
     assert result["contract_id"]==c["contract_id"] and result["low"]==90 and reason is None

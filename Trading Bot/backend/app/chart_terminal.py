@@ -30,11 +30,13 @@ def chart_bars(frame, now, symbol, size, ticks=(), volume=False):
                 continue
             stamp = stamp.tz_convert("Asia/Kolkata")
             price = float(tick["ltp"])
-            if tick.get("symbol") != symbol or not math.isfinite(price) or price <= 0 or not 0 <= (now-stamp).total_seconds() <= 120:
+            if tick.get("symbol") != symbol or not math.isfinite(price) or price <= 0 or not -5 <= (now-stamp).total_seconds() <= 120:
                 continue
             if stamp.date() != now.date() or stamp.weekday() >= 5 or calendar_info(stamp.date())["closed"]:
                 continue
             minute = stamp.floor("min")
+            if minute > now.floor("min"):
+                continue
             if not 555 <= minute.hour*60+minute.minute < 930 or minute in completed_stamps:
                 continue
             row = rows.setdefault(minute, {"timestamp": minute, "open": price, "high": price, "low": price, "close": price, "tick_only": True})
@@ -203,6 +205,7 @@ class ChartTerminal:
             tick = deepcopy(self.market.latest.get(symbol, {}))
             ticks = [e.get("normalized", {}) for e in list(self.market.recent_market_events) if e.get("event_type") == "market_feed"]
             connected = self.market.connected
+        now = now_ist()  # Compare fresh ticks after potentially slow history work.
         ticks.append(tick)
         start_today = pd.Timestamp(now).normalize()
         today = frame[frame.timestamp >= start_today] if frame is not None and not frame.empty else frame
@@ -213,7 +216,9 @@ class ChartTerminal:
             age = (pd.Timestamp(now)-pd.Timestamp(exchange_stamp)).total_seconds() if exchange_stamp else None
         except (ValueError, TypeError):
             age = None
-        live = bool(connected and age is not None and 0 <= age <= 5 and now.weekday() < 5 and
+        # The exchange clock can lead the receive clock by a few seconds.
+        # Keep the actual timestamp; future minutes remain excluded above.
+        live = bool(connected and age is not None and -5 <= age <= 5 and now.weekday() < 5 and
                     not calendar_info(now.date())["closed"] and "09:15" <= now.strftime("%H:%M") < "15:30")
         portfolio = state.get("portfolio", {})
         evaluations = [r for r in portfolio.get("evaluations", []) if r.get("symbol") == symbol]

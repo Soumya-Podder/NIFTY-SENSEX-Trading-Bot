@@ -4,20 +4,55 @@ import hashlib
 import json
 import math
 import requests
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 
 class CostModel:
     endpoint = "https://openweb-api.dhan.co/brokerage"
 
-    def __init__(self, store=None):
+    def __init__(self, store=None, *, paper=False):
         self.store = store
         self.memory = {}
+        self.paper = paper
+        self.cache_only = ContextVar("fee_cache_only",default=False)
+
+    @contextmanager
+    def cached_only(self):
+        token=self.cache_only.set(True)
+        try: yield
+        finally: self.cache_only.reset(token)
+
+    def _paper_reserve(self,contract,buy,sell,qty,window,transaction):
+        now=datetime.now(timezone.utc)
+        matches=[r for r in list(self.memory.values())
+            if r.get("contract_id")==contract.get("contract_id")
+            and r.get("security_id")==str(contract["security_id"])
+            and r.get("exchange")==contract["exchange"] and r.get("lot_size")==int(contract["lot_size"])
+            and r.get("quantity")==int(qty) and r.get("window")==window and r.get("transaction")==transaction
+            and r.get("as_of")==now.date().isoformat()
+            and 0 <= (now-datetime.fromisoformat(r["captured_at"])).total_seconds() <= 3600
+            and r["buy_price"]>=buy and r["sell_price"]>=sell]
+        if not matches: return None
+        result=dict(min(matches,key=lambda r:r["total"]))
+        result.update(estimated=True,kind="conservative_broker_prequote",
+                      basis="Broker charges at equal or higher buy and sell premiums; same contract and quantity")
+        return result
 
     def _broker_quote(self, contract, buy_price, sell_price, qty, window, transaction):
         if not all(math.isfinite(v) for v in (qty,buy_price,sell_price)) or qty <= 0 or min(buy_price, sell_price) < 0 or max(buy_price, sell_price) <= 0:
             raise ValueError("Invalid charge calculation inputs")
         lot=int(contract["lot_size"])
         if lot<=0 or qty%lot: raise ValueError("Quantity is not a contract lot multiple")
+        if self.paper:
+            reserve=self._paper_reserve(contract,buy_price,sell_price,qty,window,transaction)
+            if reserve: return reserve
+        if self.cache_only.get():
+            raise ValueError("Fresh broker fee reserve required before final paper admission")
+        if self.paper:
+            # Prepare a small price envelope outside final quote-sensitive admission.
+            buy_price=math.ceil(buy_price*1.02*100)/100
+            sell_price=math.ceil(sell_price*1.02*100)/100
         body = {"source":"N","data":{
             "exchange":contract["exchange"],"segment":"D",
             "txn_type":transaction,"qty":int(qty//lot),
@@ -27,7 +62,10 @@ class CostModel:
         day=datetime.now(timezone.utc).date().isoformat()
         key="charges:"+hashlib.sha256((day+json.dumps(body,sort_keys=True)).encode()).hexdigest()
         cached=self.memory.get(key) or (self.store.cache_get(key) if self.store else None)
-        if cached: return cached
+        if cached:
+            cached={**cached,"window":window,"transaction":transaction}
+            self.memory[key]=cached
+            return self._paper_reserve(contract,buy_price,sell_price,qty,window,transaction) if self.paper else cached
         response=requests.post(self.endpoint,json=body,timeout=(4,8))
         response.raise_for_status()
         rows=response.json().get("data",[])
@@ -48,6 +86,7 @@ class CostModel:
                       captured_at=datetime.now(timezone.utc).isoformat(),
                       contract_id=contract.get("contract_id"),security_id=str(contract["security_id"]),exchange=contract["exchange"],lot_size=lot,
                       buy_price=round(buy_price,2),sell_price=round(sell_price,2),
+                      window=window,transaction=transaction,
                       request_fingerprint=hashlib.sha256(json.dumps(body,sort_keys=True).encode()).hexdigest())
         if self.store:
             receipt_id=hashlib.sha256(json.dumps(result,sort_keys=True).encode()).hexdigest()
@@ -55,7 +94,7 @@ class CostModel:
             self.store.cache_put(key,result,ttl=3600)
         if len(self.memory)>2000: self.memory.clear()
         self.memory[key]=result
-        return result
+        return self._paper_reserve(contract,buy_price,sell_price,qty,window,transaction) if self.paper else result
 
     def quote(self, contract, buy_price, sell_price, qty):
         return self._broker_quote(contract,buy_price,sell_price,qty,"SHORT_TRADE","S")

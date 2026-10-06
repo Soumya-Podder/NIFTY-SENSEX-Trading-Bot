@@ -83,6 +83,19 @@ class PaperBroker:
                 self.state["halted"]=halted; self.state["halt_reason"]=reason if halted else None
             self._persist()
 
+    def engine_error_halt(self,recover=False):
+        """Only the recovered execution loop may clear its own technical halt."""
+        reason="Paper engine error; exits remain active"
+        with self.lock:
+            if recover:
+                if self.persistence_error or self.state["positions"] or self.state.get("halt_reason")!=reason:
+                    return False
+                if self.policy and self.state["loss_ledger"].get("lock_reason"): return False
+                self.control(halted=False)
+                return True
+            if not self.state["halted"]: self.control(halted=True,reason=reason)
+            return False
+
     def new_session(self,now=None):
         day=str(local_time(now or now_ist()).date())
         with self.lock:
@@ -138,6 +151,12 @@ class PaperBroker:
                 self._persist()
 
     def place_order(self,*,contract,quote,quantity,signal,now=None):
+        if getattr(self.cost,"paper",False):
+            with self.cost.cached_only():
+                return self._place_order(contract=contract,quote=quote,quantity=quantity,signal=signal,now=now)
+        return self._place_order(contract=contract,quote=quote,quantity=quantity,signal=signal,now=now)
+
+    def _place_order(self,*,contract,quote,quantity,signal,now=None):
         now=local_time(now or now_ist())
         with self.lock:
             if self.persistence_error: raise ValueError("Paper entries paused: account persistence recovery required")
@@ -341,10 +360,10 @@ class PaperBroker:
                    "entry_premium":p["entry"],"exit":price,"exit_premium":price,"exit_ts":now.isoformat(),
                    "gross_pnl":gross,"costs":allocated+fee["total"],"pnl":net,"reason":reason,
                    "exit_charges":fee,"allocated_entry_charges":allocated,
-                   "costs_estimated":bool(fee.get("estimated")),
+                   "costs_estimated":bool(fee.get("estimated") or p["entry_charges"].get("estimated")),
                    "estimated_exit":False,
                    "paper_research_only":str(p.get("portfolio_version","")).startswith("autonomous-paper"),
-                   "learning_eligible":not bool(fee.get("estimated")),
+                   "learning_eligible":not bool(fee.get("estimated") or p["entry_charges"].get("estimated")),
                    "holding_minutes":(now-local_time(p["entry_ts"])).total_seconds()/60,
                    "fill_model":"observed_bid_with_depth","partial":qty<p["qty"]}
             order={"id":identifier,"side":"SELL","status":"FILLED","price":price,"quantity":qty,

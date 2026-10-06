@@ -70,6 +70,50 @@ def test_autonomous_downtrend_enters_and_exits_without_any_dhan_order(tmp_path, 
     assert len(store.list_records("paper_investigations")) == 1
 
 
+def test_autonomous_continuation_uses_declared_greek_freshness_policy(tmp_path,monkeypatch):
+    from app.option_screen import describe
+    engine,broker,_,clock,q,_=setup_engine(tmp_path,monkeypatch)
+    q['greeks_observed_at']=(clock['now']-timedelta(seconds=60)).isoformat()
+    signals,_=engine.evaluate_market(engine.frames['NIFTY'],clock['now'],'NIFTY',engine.status['market_structure']['NIFTY'])
+    assert next(s for s in signals if s['strategy_id']=='trend_continuation')['max_greeks_age_seconds']==describe()['max_greek_age_seconds']
+    engine.portfolio_cycle()
+    assert broker.snapshot()['open_positions']==1
+
+
+def test_autonomous_stale_greeks_still_cannot_enter(tmp_path,monkeypatch):
+    engine,broker,_,clock,q,_=setup_engine(tmp_path,monkeypatch)
+    q['greeks_observed_at']=(clock['now']-timedelta(seconds=121)).isoformat()
+    engine.portfolio_cycle()
+    assert broker.snapshot()['open_positions']==0
+
+
+def test_slow_fee_preparation_does_not_expire_final_paper_entry(tmp_path,monkeypatch):
+    from app.expectancy import CostModel
+    engine,broker,_,clock,q,under=setup_engine(tmp_path,monkeypatch)
+    broker.cost=CostModel(paper=True)
+    calls=[]
+    def request(*args,**kwargs):
+        assert not broker.cost.cache_only.get(), 'Final admission performed HTTP'
+        calls.append(kwargs['json'])
+        clock['now']+=timedelta(seconds=3)
+        # Live feed continues publishing fresh books while fee preparation runs.
+        q.update(timestamp=clock['now'].isoformat(),quote_update_timestamp=clock['now'].isoformat())
+        under['quote_update_timestamp']=clock['now'].isoformat()
+        data=kwargs['json']['data']
+        turnover=(data['buy_price']+data['sell_price'])*data['qty']*q['lot_size']
+        raw={'EXCHANGE_TURNOVER':turnover,'BROKERAGE':20.,'EXCHANGE_CHARGES':0.,'STT_CHARGES':0.,
+             'SEBI_CHARGES':0.,'IPFT_CHARGES':0.,'STAMP_DUTY':0.,'GST_CHARGES':0.,'TOTAL_CHARGES_TAX':20.}
+        return SimpleNamespace(raise_for_status=lambda:None,json=lambda:{'data':[raw]})
+    monkeypatch.setattr('app.expectancy.requests.post',request)
+    engine.portfolio_cycle()
+    assert calls and broker.snapshot()['open_positions']==1
+    position=broker.snapshot()['positions'][0]
+    assert position['risk_rupees']<=650 and position['entry_charges']['estimated']
+    before=len(calls)
+    engine.portfolio_cycle()
+    assert len(calls)==before and broker.snapshot()['open_positions']==1
+
+
 def test_full_chain_context_is_mandatory_but_missing_advisory_news_is_not(tmp_path, monkeypatch):
     engine, broker, _, _, _, _ = setup_engine(tmp_path, monkeypatch)
     engine.status["market_context"]["NIFTY"]["positioning"]["scope"] = "ATM_PLUS_MINUS_5"
@@ -100,6 +144,44 @@ def test_current_completed_setup_cannot_be_kept_alive_after_invalidation(tmp_pat
     signal = signals[-1]
     engine.frames["NIFTY"].loc[49, "close"] = 24005.
     assert engine._current_signal(signal, clock["now"])[0] is None
+
+
+@pytest.mark.parametrize('side',['CALL','PUT'])
+def test_confirmed_setup_survives_next_candle_without_repeating_trigger(tmp_path,monkeypatch,side):
+    engine,broker,_,clock,q,under=setup_engine(tmp_path,monkeypatch)
+    frame=engine.frames['NIFTY']
+    if side=='CALL':
+        frame=frame.copy()
+        frame[['open','close','ema9','ema21']]=48000-frame[['open','close','ema9','ema21']]
+        high,low=48000-frame.low,48000-frame.high
+        frame['high'],frame['low']=high,low
+        engine.frames['NIFTY']=frame
+        q.update(option_type='CALL',delta=.5)
+    protection=engine._request_protection
+    engine._request_protection=lambda *_:(None,"Waiting for the selected contract's completed protection candle")
+    engine.portfolio_cycle()
+    assert broker.snapshot()['open_positions']==0
+    engine._request_protection=protection
+    signal=next(s for s in engine.evaluate_market(frame,clock['now'],'NIFTY',engine.status['market_structure']['NIFTY'])[0]
+                if s['strategy_id']=='trend_continuation')
+    following=frame.tail(1).copy()
+    following['timestamp']+=pd.Timedelta(minutes=1)
+    values=[23990.,23996.,23989.,23993.,23999.,24012.]
+    if side=='CALL': values=[48000-values[0],48000-values[2],48000-values[1],48000-values[3],48000-values[4],48000-values[5]]
+    following[['open','high','low','close','ema9','ema21']]=values
+    engine.frames['NIFTY']=pd.concat([frame,following],ignore_index=True)
+    clock['now']+=timedelta(minutes=1)
+    refreshed,reason=engine._current_signal(signal,clock['now'])
+    assert reason is None and refreshed['id']==signal['id'] and refreshed['option_type']==side
+    assert refreshed['feature_row']['timestamp']==following.iloc[0].timestamp.isoformat(sep=' ')
+    assert engine._current_signal(signal,clock['now']+timedelta(seconds=66))[0] is None
+    q.update(timestamp=clock['now'].isoformat(),quote_update_timestamp=clock['now'].isoformat())
+    under.update(ltp=float(following.iloc[0].close),quote_update_timestamp=clock['now'].isoformat())
+    engine.portfolio_cycle()
+    assert broker.snapshot()['open_positions']==1
+    assert broker.snapshot()['positions'][0]['option_type']==side
+    engine.frames['NIFTY'].loc[50,'low' if side=='CALL' else 'high']=signal['invalidation']
+    assert engine._current_signal(signal,clock['now'])[0] is None
 
 
 def test_target_room_uses_confirmed_zone_and_does_not_shrink_stop_to_fit(tmp_path, monkeypatch):

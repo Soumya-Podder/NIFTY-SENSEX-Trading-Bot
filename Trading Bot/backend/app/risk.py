@@ -72,8 +72,12 @@ def size_plan_order(policy,account,contract,stop,cost):
     lots=max(0,int(min(cash/entry,budget/unit_risk,depth)//lot))
     for count in range(lots,0,-1):
         qty=count*lot
-        buy_cost=cost.quote(contract,entry,0,qty)["total"]
-        stop_cost=cost.quote(contract,entry,stop,qty)["total"]
+        try:
+            buy_cost=cost.quote(contract,entry,0,qty)["total"]
+            stop_cost=cost.quote(contract,entry,stop,qty)["total"]
+        except ValueError as exc:
+            if str(exc)!="Fresh broker fee reserve required before final paper admission": raise
+            continue  # Final admission may use only previously prepared quantities.
         if not all(math.isfinite(v) and v>=0 for v in (buy_cost,stop_cost)): return None
         if entry*qty+buy_cost<=cash and unit_risk*qty+stop_cost<=budget:
             return {"quantity":qty,"lots":count,"buy_cost":buy_cost,"stop_cost":stop_cost}

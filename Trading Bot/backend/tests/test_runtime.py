@@ -11,6 +11,35 @@ from app.expectancy import ExpectancyEngine
 from tests.test_paper import plan_account,contract,quote,signal,enter
 
 
+def test_feed_trade_timestamp_preserves_sdk_wall_clock_and_date():
+    from datetime import timezone
+    from app.market_data import feed_trade_timestamp,exchange_timestamp
+    # Captured feed convention: the epoch's UTC wall clock is exchange IST.
+    epoch=int(datetime(2026,10,6,11,4,33,tzinfo=timezone.utc).timestamp())
+    assert feed_trade_timestamp(epoch)=="2026-10-06T11:04:33+05:30"
+    assert exchange_timestamp(feed_trade_timestamp(epoch))=="2026-10-06T11:04:33+05:30"
+    assert exchange_timestamp(epoch)=="2026-10-06T16:34:33+05:30"
+    yesterday=int(datetime(2026,10,5,15,29,59,tzinfo=timezone.utc).timestamp())
+    assert feed_trade_timestamp(yesterday)=="2026-10-05T15:29:59+05:30"
+
+
+def test_normalized_feed_time_reaches_underlying_and_option_observations():
+    from app.market_data import feed_trade_timestamp
+    from datetime import timezone
+    stamp=feed_trade_timestamp(int(datetime(2026,10,6,11,4,33,tzinfo=timezone.utc).timestamp()))
+    feed=DhanMarketData('test','test','NIFTY')
+    feed.security_to_symbol['13']='NIFTY'
+    feed._on_message(None,{'security_id':13,'exchange_segment':0,'type':'Ticker Data','LTP':'22674','LTT':stamp})
+    assert feed.latest['NIFTY']['exchange_timestamp']==stamp
+    c={**contract(),'security_id':'999','exchange':'NSE'}
+    feed.subscribe_options([c])
+    feed._on_message(None,{'security_id':999,'exchange_segment':2,'type':'Full Data','LTP':'100','LTT':stamp,
+        'depth':[{'bid_price':'99','ask_price':'100','bid_quantity':20,'ask_quantity':30}]})
+    q=feed.executable_quotes()[c['contract_id']]
+    assert q['exchange_timestamp']==stamp
+    assert q['quote_update_timestamp']!=stamp
+
+
 def test_dhan_profile_validator_accepts_current_top_level_shape(monkeypatch):
     import dhanhq
     monkeypatch.setattr(dhanhq.DhanLogin,"user_profile",lambda *_:{

@@ -1,5 +1,14 @@
 """Worker liveness is independent of market-data availability and strategy edge."""
 from .session import now_ist, local_time, session_state, quote_is_fresh
+import pandas as pd
+
+
+def completed_candles_ready(frames,health,now):
+    return {symbol:frame is not None and not frame.empty and
+        frame.timestamp.iloc[-1].date()==now.date() and
+        60<=(pd.Timestamp(now)-frame.timestamp.iloc[-1]).total_seconds()<=125 and
+        health.get(symbol,{}).get("candle_status") not in {"ERROR","WAITING"}
+        for symbol,frame in frames.items()}
 
 
 def execution_health(engine, broker, now=None):
@@ -19,7 +28,10 @@ def execution_health(engine, broker, now=None):
     broker_health=broker.health()
     healthy=fresh and bool(threads) and not dead and not errors and broker_health["healthy"]
     # A rejected entry is an audit result, not a permanent readiness latch.
-    operational=fresh and bool(threads) and not dead and not {k:v for k,v in errors.items() if k!="entry_error"} and broker_health["healthy"]
+    symbol_error=bool(errors.get("data_error")) and any(
+        health.get("error")==errors["data_error"] for health in engine.status.get("data_symbols",{}).values())
+    operational=fresh and bool(threads) and not dead and not {k:v for k,v in errors.items()
+        if k!="entry_error" and not (k=="data_error" and symbol_error)} and broker_health["healthy"]
     return {"healthy":healthy,"operational":operational,"heartbeat_age_seconds":age,"dead_workers":dead,
             "workers":[{"name":t.name,"alive":t.is_alive()} for t in threads],
             "advisory_errors":{key:engine.status[key] for key in ("feedback_error","context_errors","signal_journal_error","management_error","paper_learning_error") if engine.status.get(key)},

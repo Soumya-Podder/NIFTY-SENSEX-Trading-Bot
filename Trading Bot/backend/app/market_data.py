@@ -16,8 +16,15 @@ HISTORY_CACHE_ONLY=ContextVar("history_cache_only",default=False)
 
 from .telemetry.decision_trace import event
 from .telemetry.event_bus import event_bus
-from .session import local_time,now_ist,quote_is_fresh,session_state
+from .session import IST,local_time,now_ist,quote_is_fresh,session_state
 from .dhan_observations import compare_chains
+
+
+def feed_trade_timestamp(epoch_time):
+    # Preserve the SDK's UTC-decoded wall clock, which the live Dhan feed
+    # supplies in IST, but retain its date. Adding UTC here shifts LTT twice.
+    # This applies only to WebSocket LTT, not REST/standard Unix timestamps.
+    return datetime.fromtimestamp(epoch_time,timezone.utc).replace(tzinfo=IST).isoformat()
 
 
 def exchange_timestamp(value):
@@ -80,20 +87,31 @@ class DhanMarketData:
     def reconnect_if_idle(self):
         if not self.configured or session_state() not in {"ENTRY_WINDOW","MANAGE_ONLY"}: return False
         if time.monotonic()-self.last_attempt<30: return False
-        if self.last_packet_at and (now_ist()-local_time(self.last_packet_at)).total_seconds()<30: return False
+        now=now_ist()
+        with self.lock:
+            indices=[self.latest.get(symbol,{}) for symbol in self.symbol_names]
+            index_idle=any(not tick.get("quote_update_timestamp") or (now-local_time(tick["quote_update_timestamp"])).total_seconds()>=30 for tick in indices)
+            depth_idle=any(not any(q.get("symbol")==symbol and quote_is_fresh(q,now,30) for q in self.option_quotes.values())
+                for symbol in self.symbol_names if any(c["symbol"]==symbol for c in self.option_contracts.values()))
+        if self.last_packet_at and (now-local_time(self.last_packet_at)).total_seconds()<30 and not index_idle and not depth_idle: return False
         return self.refresh_credentials(self.client_id,self.access_token,force=True)
 
     def subscribe_options(self,contracts):
         from dhanhq import MarketFeed
         desired={(8 if c["exchange"]=="BSE" else 2,str(c["security_id"])):dict(c) for c in contracts}
         with self.lock:
+            previous=dict(self.option_contracts)
             old=set(self.option_contracts); new=set(desired)
             self.option_contracts=desired
             self.option_quotes={k:v for k,v in self.option_quotes.items() if k in {c["contract_id"] for c in contracts}}
             feed=self.feed
         if feed:
-            if old-new: feed.unsubscribe_symbols([(ex,sid,MarketFeed.Full) for ex,sid in old-new])
-            if new-old: feed.subscribe_symbols([(ex,sid,MarketFeed.Full) for ex,sid in new-old])
+            try:
+                if old-new: feed.unsubscribe_symbols([(ex,sid,MarketFeed.Full) for ex,sid in old-new])
+                if new-old: feed.subscribe_symbols([(ex,sid,MarketFeed.Full) for ex,sid in new-old])
+            except Exception:
+                with self.lock: self.option_contracts=previous
+                raise
 
     def executable_quotes(self):
         with self.lock: return {k:dict(v) for k,v in self.option_quotes.items()}
@@ -131,14 +149,14 @@ class DhanMarketData:
             instruments = self._resolve_instruments(instrument_df, MarketFeed)
             if not instruments:
                 raise RuntimeError("No configured symbols resolved in Dhan security master")
-            self._load_initial_snapshot(dhanhq(context))
+            client=dhanhq(context); client.dhan_http.timeout=(5,15)
+            self._load_initial_snapshot(client)
             if self.stopping.is_set(): return
             with self.lock:
                 instruments += [(ex,sid,MarketFeed.Full) for ex,sid in self.option_contracts]
             class TimestampedFeed(MarketFeed):
                 def utc_time(self, epoch_time):
-                    # The SDK's default drops the date, making yesterday's tick ambiguous.
-                    return datetime.fromtimestamp(epoch_time,timezone.utc).isoformat()
+                    return feed_trade_timestamp(epoch_time)
             self.feed = TimestampedFeed(context, instruments, "v2", on_connect=self._on_connect,
                                     on_message=self._on_message, on_error=self._on_error,on_close=self._on_close)
             self.feed.run()
@@ -412,49 +430,50 @@ class DhanGateway:
             if cached is not None:
                 if cache_seconds<0 and has_candles(cached): self.store.retain_cache(key)
                 return cached
-        with self.locks[kind]:
-            for attempt in range(3):
-                if cancel and cancel(): raise InterruptedError("Cancelled")
-                # Rebind every retry as well: a renewed .env must never leave
-                # retries bound to the client carrying the expired token.
-                self.refresh_credentials()
-                generation=getattr(self,"credential_generation",0)
-                if getattr(self,"credential_provider",None): method=getattr(self.client,method.__name__)
+        for attempt in range(3):
+            if cancel and cancel(): raise InterruptedError("Cancelled")
+            # Rebind every retry as well: a renewed .env must never leave
+            # retries bound to the client carrying the expired token.
+            self.refresh_credentials()
+            generation=getattr(self,"credential_generation",0)
+            if getattr(self,"credential_provider",None): method=getattr(self.client,method.__name__)
+            # Reserve request start times, not the duration of the HTTP call.
+            # A slow endpoint must not starve independent index candles.
+            with self.locks[kind]:
                 delay={"data":.25,"quote":1.05,"chain":3.1}[kind]-(time.monotonic()-self.last[kind])
                 if delay>0: time.sleep(delay)
+                self.last[kind]=time.monotonic()
+            try:
                 try:
-                    try:
-                        result=self.unwrap(method(*args))
-                    except Exception:
-                        self._record_response(method.__name__,args,None,generation,now_ist().isoformat(),"REQUEST_FAILED")
-                        raise
-                    received_at=now_ist().isoformat()
-                    self.refresh_credentials()
-                    if generation!=getattr(self,"credential_generation",0):
-                        self._record_response(method.__name__,args,None,generation,received_at,"CREDENTIAL_CHANGED_DISCARDED")
-                        raise RuntimeError("Credentials changed during request; discard old response and retry")
-                    capture_id=self._record_response(method.__name__,args,result,generation,received_at)
-                    if method.__name__ == "option_chain" and isinstance(result,dict):
-                        # Cache the original receipt time with the data. A cache
-                        # hit must not make old OI/IV appear newly observed.
-                        request_key=hashlib.sha256(json.dumps(args,sort_keys=True,default=str).encode()).hexdigest()
-                        previous_key=f"chain_observation:{generation}:{request_key}"
-                        previous=self.store.cache_get(previous_key,include_expired=True)
-                        result={**result,"_observed_at":received_at,"_api_capture_id":capture_id,"_request_key":request_key}
-                        comparison=compare_chains(result,previous)
-                        # Store the baseline without nesting previous comparisons.
-                        self.store.cache_put(previous_key,result,-1)
-                        result["_comparison"]=comparison
-                    self.last[kind]=time.monotonic()
-                    if cache_seconds:
-                        if cache_seconds>=0:
-                            key="runtime:"+str(generation)+":"+hashlib.sha256((method.__name__+json.dumps(args,sort_keys=True,default=str)).encode()).hexdigest()
-                        self.store.cache_put(key,result,86400 if cache_seconds<0 and not has_candles(result) else cache_seconds)
-                    return result
+                    result=self.unwrap(method(*args))
                 except Exception:
-                    self.last[kind]=time.monotonic()
-                    if attempt==2: raise
-                    time.sleep(2**attempt)
+                    self._record_response(method.__name__,args,None,generation,now_ist().isoformat(),"REQUEST_FAILED")
+                    raise
+                received_at=now_ist().isoformat()
+                self.refresh_credentials()
+                if generation!=getattr(self,"credential_generation",0):
+                    self._record_response(method.__name__,args,None,generation,received_at,"CREDENTIAL_CHANGED_DISCARDED")
+                    raise RuntimeError("Credentials changed during request; discard old response and retry")
+                capture_id=self._record_response(method.__name__,args,result,generation,received_at)
+                if method.__name__ == "option_chain" and isinstance(result,dict):
+                    # Cache the original receipt time with the data. A cache
+                    # hit must not make old OI/IV appear newly observed.
+                    request_key=hashlib.sha256(json.dumps(args,sort_keys=True,default=str).encode()).hexdigest()
+                    previous_key=f"chain_observation:{generation}:{request_key}"
+                    previous=self.store.cache_get(previous_key,include_expired=True)
+                    result={**result,"_observed_at":received_at,"_api_capture_id":capture_id,"_request_key":request_key}
+                    comparison=compare_chains(result,previous)
+                    # Store the baseline without nesting previous comparisons.
+                    self.store.cache_put(previous_key,result,-1)
+                    result["_comparison"]=comparison
+                if cache_seconds:
+                    if cache_seconds>=0:
+                        key="runtime:"+str(generation)+":"+hashlib.sha256((method.__name__+json.dumps(args,sort_keys=True,default=str)).encode()).hexdigest()
+                    self.store.cache_put(key,result,86400 if cache_seconds<0 and not has_candles(result) else cache_seconds)
+                return result
+            except Exception:
+                if attempt==2: raise
+                time.sleep(2**attempt)
 
     def _record_response(self,method,args,result,generation,received_at,outcome="SUCCESS"):
         recorder=getattr(self,"response_recorder",None)
@@ -649,10 +668,10 @@ class DhanGateway:
             self.store.cache_put(key, raw, -1)
             self.store.index_history(key, family, str(day), str(day+pd.Timedelta(days=1)), fields)
 
-    def contract_candles(self,contract,start,end):
+    def contract_candles(self,contract,start,end,cache_seconds=30):
         if not contract.get("identity_verified"): raise ValueError("Unverified option contract")
         data=self.call(self.client.intraday_minute_data,contract["security_id"],contract["exchange"]+"_FNO",
-                       "OPTIDX",str(start),str(end),1,True,cache_seconds=30)
+                       "OPTIDX",str(start),str(end),1,True,cache_seconds=cache_seconds)
         fields=("timestamp","open","high","low","close","volume")
         stamps=data.get("timestamp",[])
         if not stamps: return pd.DataFrame(columns=fields)

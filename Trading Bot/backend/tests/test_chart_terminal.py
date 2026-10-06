@@ -47,6 +47,15 @@ def test_volume_uses_complete_actual_minutes_and_never_index_tick_volume():
     assert len(chart_bars(f, "2026-09-25T09:25:00+05:30", "NIFTY", 5, volume=True)) == 1
 
 
+def test_live_tick_clock_skew_is_bounded_and_cannot_create_future_minutes():
+    f=candles(10)
+    tick={"symbol":"NIFTY","ltp":110.,"exchange_timestamp":"2026-09-25T09:25:08+05:30"}
+    assert chart_bars(f,"2026-09-25T09:25:05+05:30","NIFTY",5,[tick])[-1]["close"]==110.
+    assert len(chart_bars(f,"2026-09-25T09:25:00+05:30","NIFTY",5,[tick]))==2
+    tick["exchange_timestamp"]="2026-09-25T09:26:01+05:30"
+    assert len(chart_bars(f,"2026-09-25T09:25:59+05:30","NIFTY",5,[tick]))==2
+
+
 def test_snapshot_is_read_only_symbol_scoped_and_never_claims_forecast(monkeypatch):
     monkeypatch.setattr("app.chart_terminal.now_ist", lambda: datetime.fromisoformat("2026-09-25T09:45:00+05:30"))
     class Storage:
@@ -61,6 +70,23 @@ def test_snapshot_is_read_only_symbol_scoped_and_never_claims_forecast(monkeypat
     assert len(result["candles"]) == 6
     assert not result["live"] and not result["probabilities"]["calibrated"]
     assert not result["volume"]["bars"] and not result["decision"]["evaluations"]
+
+
+def test_snapshot_uses_clock_after_slow_history_lookup(monkeypatch):
+    clock={"now":datetime.fromisoformat("2026-09-25T09:45:00+05:30")}
+    monkeypatch.setattr("app.chart_terminal.now_ist",lambda:clock["now"])
+    store=SimpleNamespace(list_records=lambda *_:[])
+    engine=SimpleNamespace(lock=threading.Lock(),frames={"NIFTY":candles()},status={})
+    tick={"symbol":"NIFTY","ltp":110.,"exchange_timestamp":"2026-09-25T09:45:19+05:30"}
+    market=SimpleNamespace(lock=threading.Lock(),latest={"NIFTY":tick},recent_market_events=[],connected=True)
+    terminal=ChartTerminal(store,engine,market)
+    def history(*_):
+        clock["now"]=datetime.fromisoformat("2026-09-25T09:45:20+05:30")
+        return candles(0)
+    monkeypatch.setattr(terminal,"_history",history)
+    result=terminal.snapshot("NIFTY","5m")
+    assert result["live"] and result["tick_age_seconds"]==1
+    assert result["generated_at"]==clock["now"].isoformat()
 
 
 def test_terminal_merges_old_history_with_current_engine_and_confirms_4h(monkeypatch):

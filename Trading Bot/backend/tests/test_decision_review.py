@@ -148,13 +148,13 @@ def test_stopped_engine_can_restart_without_duplicate_live_workers(tmp_path,monk
         def join(self,timeout): self.alive=False
     monkeypatch.setattr("app.paper_engine.threading.Thread",Worker)
     e.start()
-    assert len(e.threads)==10 and not e.stop_event.is_set()
+    assert len(e.threads)==11 and not e.stop_event.is_set()
     assert any(thread.name=="paper-protection" for thread in e.threads)
     e.start()
-    assert len(created)==10
+    assert len(created)==11
     e.stop(); assert e.stop_event.is_set()
     e.start()
-    assert len(created)==20 and len(e.threads)==10 and not e.stop_event.is_set()
+    assert len(created)==22 and len(e.threads)==11 and not e.stop_event.is_set()
 
 
 def test_generic_pipeline_event_does_not_claim_specialist_work(tmp_path):

@@ -1,5 +1,4 @@
 """Autonomous paper selector with independent protection and auditable research."""
-import threading
 from copy import deepcopy
 from pathlib import Path
 import pandas as pd
@@ -7,6 +6,8 @@ import pandas as pd
 from .portfolio_engine import MultiStrategyPaperEngine
 from .autonomous_policy import VERSION, STRATEGY_SPECS, evaluate_market, strategy_order, plan_candidate, management_decision
 from .paper_learning import PaperResearchLearning
+from .strategy_portfolio import closed_session
+from .market_structure import structure_evidence
 
 
 class AutonomousPaperEngine(MultiStrategyPaperEngine):
@@ -24,7 +25,9 @@ class AutonomousPaperEngine(MultiStrategyPaperEngine):
 
     def evaluate_market(self, frame, now, symbol, structure):
         tail=frame.tail(6)[["timestamp","open","high","low","close"]].to_json(date_format="iso") if frame is not None and not frame.empty else None
-        key=(id(frame), tail, pd.Timestamp(now).floor("min").isoformat(), structure.get("as_of"))
+        completed=frame[frame.timestamp+pd.Timedelta(minutes=1)<=pd.Timestamp(now)] if tail is not None else None
+        fresh=completed is not None and not completed.empty and (pd.Timestamp(now)-completed.timestamp.iloc[-1]).total_seconds()<=125
+        key=(id(frame), tail, pd.Timestamp(now).floor("min").isoformat(), fresh, structure.get("as_of"))
         if symbol not in self.analysis_cache or self.analysis_cache[symbol][0]!=key:
             self.analysis_cache[symbol]=(key,evaluate_market(frame, now, symbol, structure))
         return deepcopy(self.analysis_cache[symbol][1])
@@ -45,7 +48,34 @@ class AutonomousPaperEngine(MultiStrategyPaperEngine):
         with self.lock: frame = self.frames.get(signal["symbol"])
         current, rows = self.evaluate_market(frame, now, signal["symbol"], self.status["market_structure"].get(signal["symbol"], {}))
         match = next((s for s in current if s["id"] == signal["id"]), None)
-        return (match, None) if match else (None, "Setup no longer confirmed on the current completed bar")
+        if match: return match,None
+        if not self._signal_fresh(signal,now): return None,"Setup expired before candidate review"
+        bars,problem=closed_session(frame,now)
+        if problem: return None,problem
+        # Reconfirm the original causal trigger, rather than requiring a new
+        # candle to reproduce its ID. The existing three-bar lifetime applies.
+        original,_=evaluate_market(frame,pd.Timestamp(signal["timestamp"])+pd.Timedelta(minutes=1),
+                                  signal["symbol"],self.status["market_structure"].get(signal["symbol"], {}))
+        confirmed=next((s for s in original if s["id"]==signal["id"]),None)
+        if not confirmed: return None,"Original completed setup is no longer confirmed"
+        following=bars[bars.timestamp>pd.Timestamp(signal["timestamp"])]
+        call=signal["option_type"]=="CALL"
+        if ((following.low<=signal["invalidation"]).any() if call else
+                (following.high>=signal["invalidation"]).any()):
+            return None,"Underlying has invalidated the setup on a completed bar"
+        row=next((r for r in rows if r["id"]==signal["strategy_id"]),{})
+        if not row.get("feature_row") or row.get("regime")!=confirmed["regime"]:
+            return None,"Current completed-bar regime no longer supports the setup"
+        last=bars.iloc[-1]
+        if signal["strategy_id"] in {"trend_continuation","trend_pullback"}:
+            if (last.close<=last.ema21 if call else last.close>=last.ema21) or abs(last.close-last.ema21)>2*last.atr:
+                return None,"Current trend is contradictory or extended beyond two ATR from EMA 21"
+        snapshot=self.status["market_structure"].get(signal["symbol"], {})
+        evidence=structure_evidence(snapshot,signal["option_type"],now)
+        relation="RESISTANCE" if call else "SUPPORT"
+        zones=[z for z in snapshot.get("zones",[]) if z["relation"]==relation and z["timeframe"]!="2m"]
+        evidence["target_obstacle"]=min(zones,key=lambda z:z["distance_points"],default=None)
+        return {**confirmed,"feature_row":row["feature_row"],"regime":row["regime"],"market_structure":evidence},None
 
     def _assess_offer(self, signal, contract, account, outcomes, now, review):
         context = self.context_at(signal["symbol"], now, signal["horizon_minutes"])
@@ -85,12 +115,8 @@ class AutonomousPaperEngine(MultiStrategyPaperEngine):
         if self.market and getattr(self.market, "recorder", None):
             self.market.recorder.record("runtime_policy", {"source": self.version, "symbol": "SYSTEM"}, getattr(self.market, "credential_generation", 0))
         super().start()
-        worker = threading.Thread(name="paper-research-learning", target=self._learning_loop, daemon=True)
-        self.threads.append(worker)
-        worker.start()
-        manager = threading.Thread(name="paper-position-manager", target=self._management_loop, daemon=True)
-        self.threads.append(manager)
-        manager.start()
+        self._start_worker("paper-research-learning",self._learning_loop)
+        self._start_worker("paper-position-manager",self._management_loop)
 
     def _learning_loop(self):
         while not self.stop_event.is_set():

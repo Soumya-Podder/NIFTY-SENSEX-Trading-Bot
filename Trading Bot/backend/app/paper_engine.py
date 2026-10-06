@@ -26,6 +26,10 @@ class PaperEngine:
         self.last_credential_generation=-1
         self.telegram_position_updates={}
         self.protection_attempts={}
+        self.worker_targets={}
+        self.worker_recovery_after={}
+        self.credential_renewal_after=0
+        self.recorder_recovery_after=0
 
         self.pipeline=DecisionPipeline(store.active_learning_policies(),self.publish)
         self.risk=RiskEngine(settings.max_trade_risk_rupees,settings.daily_loss_limit_rupees,
@@ -59,7 +63,25 @@ class PaperEngine:
         self.threads.clear()
         self.stop_event.clear()
         for name,target in (("paper-nifty",lambda:self._data_loop("NIFTY")),("paper-sensex",lambda:self._data_loop("SENSEX")),("paper-quotes",self._quote_loop),("paper-protection",self._protection_loop),("paper-engine",self._loop),("paper-feedback",self._feedback_loop),("paper-feed-watch",self._feed_watch)):
-            thread=threading.Thread(name=name,target=target,daemon=True); self.threads.append(thread); thread.start()
+            self._start_worker(name,target)
+
+    def _start_worker(self,name,target):
+        with self.lock:
+            self.worker_targets[name]=target
+            thread=threading.Thread(name=name,target=target,daemon=True)
+            self.threads.append(thread); thread.start()
+
+    def _restart_dead_workers(self):
+        with self.lock:
+            if self.stop_event.is_set(): return
+            for index,thread in enumerate(self.threads):
+                target=self.worker_targets.get(thread.name)
+                if thread.is_alive() or target is None or time.monotonic()<self.worker_recovery_after.get(thread.name,0): continue
+                self.worker_recovery_after[thread.name]=time.monotonic()+5
+                replacement=threading.Thread(name=thread.name,target=target,daemon=True)
+                self.threads[index]=replacement; replacement.start()
+                recovery=self.status.setdefault("worker_recovery",{}).setdefault(thread.name,{"restarts":0})
+                recovery.update(restarts=recovery["restarts"]+1,last_restart=self._now().isoformat())
 
     def stop(self):
         self.stop_event.set()
@@ -71,8 +93,18 @@ class PaperEngine:
     def _feed_watch(self):
         while not self.stop_event.is_set():
             try:
+                self._restart_dead_workers()
+                recorder=getattr(self.market,"recorder",None)
+                if recorder and time.monotonic()>=self.recorder_recovery_after and not recorder.status()["worker_alive"]:
+                    self.recorder_recovery_after=time.monotonic()+30
+                    recorder.start()
+                    self.status["recorder_recovery"]={"attempted_at":self._now().isoformat(),"status":"RESTART_REQUESTED"}
                 if self.market and hasattr(self.market,"reconnect_if_idle"):
                     self.market.reconnect_if_idle()
+                if getattr(self.gateway,"credential_provider",None) and self._session() not in {"ENTRY_WINDOW","MANAGE_ONLY"} and not self.broker.positions()["positions"] and time.monotonic()>=self.credential_renewal_after:
+                    from .credential_recovery import renew_project_token
+                    self.credential_renewal_after=time.monotonic()+300
+                    self.status["credential_renewal"]=renew_project_token(self._now())
                 self.status["feed_watch_error"]=None
             except Exception as exc: self.status["feed_watch_error"]=type(exc).__name__+": waiting to reconnect market feed"
             self.stop_event.wait(2)
@@ -208,20 +240,25 @@ class PaperEngine:
 
     def _loop(self):
         consecutive_errors = 0
+        successful_cycles = 0
         while not self.stop_event.is_set():
             try:
+                self._restart_dead_workers()
                 self.cycle()
                 consecutive_errors = 0
-                if not self.broker.state.get("halted") or self.broker.state.get("halt_reason") != "Paper engine error; exits remain active":
-                    self.status["error"] = None
+                successful_cycles += 1
+                if successful_cycles>=2 and self.broker.engine_error_halt(recover=True):
+                    self.status["engine_recovery"]={"recovered_at":self._now().isoformat(),"reason":"Two successful execution cycles; technical halt cleared"}
+                self.status["error"] = None
             except Exception as exc:
                 consecutive_errors += 1
+                successful_cycles = 0
                 self.status["error"] = str(exc)[:300]
                 import logging
                 logging.getLogger("paper_engine").exception("Paper engine cycle error: %s", exc)
                 if consecutive_errors >= 2:
                     try:
-                        self.broker.control(halted=True, reason="Paper engine error; exits remain active")
+                        self.broker.engine_error_halt()
                         self.publish(event("Risk", "PORTFOLIO", "REJECTED", f"Paper engine error: {str(exc)[:150]}", evaluation={"error": str(exc)[:300]}))
                     except Exception as persist_exc:
                         self.status["persistence_error"]=type(persist_exc).__name__

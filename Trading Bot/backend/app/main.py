@@ -24,7 +24,7 @@ from .ai import LearningService, get_analysts
 from .learning_monitor import LearningMonitor
 from .provenance import reviewed_report
 from .backtest.presentation import report_view, history_row
-from .runtime_health import execution_health, trading_readiness
+from .runtime_health import execution_health, trading_readiness, completed_candles_ready
 from .chart_terminal import ChartTerminal
 from .chart_replay import ChartReplay
 from .backtest.data import dataset_metadata
@@ -46,7 +46,7 @@ gateway=DhanGateway(settings,store,credential_provider=current_credentials)
 plan_policy=PlanRiskPolicy.from_settings(settings)
 telegram=TelegramNotifier(settings.telegram_bot_token,settings.telegram_chat_id,
     settings.telegram_enabled,settings.telegram_timeout_seconds)
-paper=PaperBroker(store,settings.paper_capital,CostModel(store),settings.max_quote_age_seconds,
+paper=PaperBroker(store,settings.paper_capital,CostModel(store,paper=True),settings.max_quote_age_seconds,
     entry_cutoff=settings.entry_cutoff,policy=plan_policy,notifier=telegram,
     option_screen_limits=(settings.max_spread_pct,settings.min_net_reward_risk))
 market_data=DhanMarketData(settings.dhan_client_id,settings.dhan_access_token,"NIFTY,SENSEX",gateway,store)
@@ -312,10 +312,11 @@ def health():
 
 
 def readiness():
+    now=now_ist()
     with engine.lock:
-        candles_ready={symbol:frame is not None and not frame.empty for symbol,frame in engine.frames.items()}
+        candles_ready=completed_candles_ready(engine.frames,engine.status.get("data_symbols",{}),now)
     return trading_readiness(execution_health(engine,paper),paper.snapshot(),market_data.snapshot(),
-        market_data.executable_quotes(),quote_recorder.status(),settings,candles_ready=candles_ready)
+        market_data.executable_quotes(),quote_recorder.status(),settings,now,candles_ready=candles_ready)
 
 
 engine.entry_readiness=readiness

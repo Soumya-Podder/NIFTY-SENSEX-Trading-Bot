@@ -88,22 +88,23 @@ class MultiStrategyPaperEngine(PaperEngine):
         if any(thread.is_alive() for thread in self.threads): return
         super().start()
         for name,target in (("paper-selector",self._entry_loop),("paper-protection-preparation",self._preparation_loop),
-                            ("paper-context",self._context_loop)):
-            thread=threading.Thread(name=name,target=target,daemon=True)
-            self.threads.append(thread); thread.start()
+                            ("paper-context-nifty",lambda:self._context_loop("NIFTY")),
+                            ("paper-context-sensex",lambda:self._context_loop("SENSEX"))):
+            self._start_worker(name,target)
 
-    def _context_loop(self):
+    def _context_loop(self,only_symbol=None):
         # Advisory downloads never run in the execution/exit heartbeat.
         while not self.stop_event.is_set():
-            if self._session() in {"ENTRY_WINDOW","MANAGE_ONLY"}:
-                for symbol in ("NIFTY","SENSEX"):
+            now=self._now()
+            if self._session() in {"PREOPEN","ENTRY_WINDOW","MANAGE_ONLY"} and "09:10"<=now.strftime("%H:%M")<self.settings.session_exit:
+                for symbol in ((only_symbol,) if only_symbol else ("NIFTY","SENSEX")):
                     if self.stop_event.is_set(): break
                     try:
                         self.collect_market_context(symbol)
                         self.status.setdefault("context_errors",{}).pop(symbol,None)
                     except Exception as exc:
                         self.status.setdefault("context_errors",{})[symbol]=self._safe_error(exc)
-            self.stop_event.wait(60)
+            self.stop_event.wait(15)
 
     def collect_market_context(self,symbol):
         self.outcome_records=self.store.list_records("market_outcomes",10000)
@@ -112,9 +113,13 @@ class MultiStrategyPaperEngine(PaperEngine):
         errors={}; rows=[]; contract={}; frame=pd.DataFrame()
         try:
             chain=self.gateway.chain(symbol,exclude_expiry_day=True,include_atm=True)
+            self._update_chain_contracts(symbol,chain,generation)
             rows,reason=(chain,None) if self.full_chain_context else chain_window(chain,symbol)
             if reason: errors["positioning"]=reason
-        except Exception as exc: errors["positioning"]=self._safe_error(exc)
+        except Exception as exc:
+            errors["positioning"]=self._safe_error(exc)
+            with self.lock:
+                self.status.setdefault("data_symbols",{}).setdefault(symbol,{})["chain_error"]=errors["positioning"]
         try: contract,frame=self.gateway.futures_candles(symbol,self._now())
         except Exception as exc: errors["futures"]=self._safe_error(exc)
         self.gateway.refresh_credentials()
@@ -149,7 +154,7 @@ class MultiStrategyPaperEngine(PaperEngine):
             if warmup:
                 for symbol in ((only_symbol,) if only_symbol else ("NIFTY","SENSEX")):
                     try:
-                        self.refresh_symbol_data(symbol)
+                        self.refresh_symbol_data(symbol,refresh_chain=False)
                     except Exception as exc:
                         previous=self.status.setdefault("data_symbols",{}).get(symbol,{})
                         self.status["data_symbols"][symbol]={**previous,"candle_status":"ERROR","candle_error":self._safe_error(exc),
@@ -157,7 +162,7 @@ class MultiStrategyPaperEngine(PaperEngine):
                         self.status["data_error"]=self._safe_error(exc)
             self.stop_event.wait(10)
 
-    def refresh_symbol_data(self,symbol):
+    def refresh_symbol_data(self,symbol,*,refresh_chain=True):
         self.gateway.refresh_credentials()
         generation=getattr(self.gateway,"credential_generation",0)
         now=self._now(); day=now.date()
@@ -194,24 +199,35 @@ class MultiStrategyPaperEngine(PaperEngine):
         self.entry_wakeup.set()
         if structure.get("as_of"):
             self.store.put_record("market_structure",symbol+":"+structure["as_of"],structure)
+        if not refresh_chain:
+            health["error"]=health.get("repair_error") or reason
+            self.status["data_error"]=next((h.get("error") for h in self.status["data_symbols"].values() if h.get("error")),None)
+            self.store.put_record("data_health",str(day)+":"+symbol,health)
+            return
         try:
             chain=self.gateway.chain(symbol,exclude_expiry_day=True,include_atm=True)
             if generation!=getattr(self.gateway,"credential_generation",0): return
-            cash=self.broker.snapshot()["cash"]
-            affordable=[c for c in chain if c.get("ltp") and 0<float(c["ltp"])*c["lot_size"]<cash]
-            chosen=[]
-            for side in ("CALL","PUT"):
-                candidates=[c for c in affordable if c["option_type"]==side]
-                candidates.sort(key=lambda c:(abs(abs(c.get("delta") or 0)-.5),-float(c.get("oi") or 0)))
-                chosen.extend(candidates[:12])
-            with self.lock:
-                self.contracts=[c for c in self.contracts if c["symbol"]!=symbol]+chosen
-            health.update(chain_contracts=len(chain),subscribed_candidates=len(chosen),chain_error=None,chain_updated_at=self._now().isoformat())
+            self._update_chain_contracts(symbol,chain,generation)
         except Exception as exc:
             health["chain_error"]=self._safe_error(exc)
         health["error"]=health.get("chain_error") or health.get("repair_error") or reason
         self.status["data_error"]=next((h.get("error") for h in self.status["data_symbols"].values() if h.get("error")),None)
         self.store.put_record("data_health",str(day)+":"+symbol,health)
+
+    def _update_chain_contracts(self,symbol,chain,generation):
+        if generation!=getattr(self.gateway,"credential_generation",0): return
+        cash=self.broker.snapshot()["cash"]
+        affordable=[c for c in chain if c.get("ltp") and 0<float(c["ltp"])*c["lot_size"]<cash]
+        chosen=[]
+        for side in ("CALL","PUT"):
+            candidates=[c for c in affordable if c["option_type"]==side]
+            candidates.sort(key=lambda c:(abs(abs(c.get("delta") or 0)-.5),-float(c.get("oi") or 0)))
+            chosen.extend(candidates[:12])
+        with self.lock:
+            self.contracts=[c for c in self.contracts if c["symbol"]!=symbol]+chosen
+            self.status.setdefault("data_symbols",{}).setdefault(symbol,{}).update(
+                chain_contracts=len(chain),subscribed_candidates=len(chosen),chain_error=None,chain_updated_at=self._now().isoformat())
+        self.entry_wakeup.set()
 
     def _safe_error(self,exc):
         text=str(exc)
@@ -240,7 +256,9 @@ class MultiStrategyPaperEngine(PaperEngine):
         end=str((stamp+pd.Timedelta(days=1)).date())
         try:
             if stamp+pd.Timedelta(minutes=1)>pd.Timestamp(self._now()): raise ValueError("Protection candle is not completed")
-            bars=self.gateway.contract_candles(contract,start,end)
+            with self.lock: retry=key in self.protection_results and not self.protection_results[key].get("candle")
+            bars=(self.gateway.contract_candles(contract,start,end,cache_seconds=0) if retry else
+                  self.gateway.contract_candles(contract,start,end))
             matches=bars[bars.timestamp==stamp]
             if len(matches)!=1: raise ValueError("Provider has not returned the exact selected-contract protection minute")
             candle=matches.iloc[0].to_dict()
@@ -589,6 +607,16 @@ class MultiStrategyPaperEngine(PaperEngine):
             "adversarial_warnings":o["signal"].get("adversarial_warnings",[])}
 
     def _execute_offer(self,offer):
+        cached_only=getattr(self.broker.cost,"cached_only",None)
+        if cached_only:
+            try:
+                with cached_only(): return self._execute_prepared_offer(offer)
+            except ValueError as exc:
+                if str(exc)!="Fresh broker fee reserve required before final paper admission": raise
+                self._gate(offer["signal"],"WAITING_DATA",str(exc)); return False
+        return self._execute_prepared_offer(offer)
+
+    def _execute_prepared_offer(self,offer):
         s=offer["signal"]; c=offer["contract"]
         now=self._now()
         if self.stop_event.is_set() or self._session()!="ENTRY_WINDOW" or not self._signal_fresh(s,now):
