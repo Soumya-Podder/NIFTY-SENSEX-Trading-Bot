@@ -69,6 +69,7 @@ def test_full_depth_and_sequence_are_durable_but_unknown_packet_fields_are_not(t
     recorder.start()
     identifier=recorder.record('option_depth',{
         'contract_id':'fixed-contract','packet_type':'Full Data','sequence':42,
+        'ordering_rejected':True,'ordering_status':'NONINCREASING_SEQUENCE','exchange_book_freshness_verified':False,
         'exchange_segment':2,'raw_exchange_timestamp':1780000000,
         'depth':[{'bid_price':99.5,'bid_quantity':50,'bid_orders':3,
                   'ask_price':100.0,'ask_quantity':25,'ask_orders':2,
@@ -78,6 +79,8 @@ def test_full_depth_and_sequence_are_durable_but_unknown_packet_fields_are_not(t
     recorder.stop()
     saved=recorder.read(identifier)['quote']
     assert saved['sequence']==42 and saved['packet_type']=='Full Data'
+    assert saved['ordering_rejected'] and not saved['exchange_book_freshness_verified']
+    assert saved['ordering_status']=='NONINCREASING_SEQUENCE'
     assert len(saved['depth'])==5 and saved['depth'][0]['bid_orders']==3
     assert 'unknown_depth_value' not in saved['depth'][0]
     assert 'access_token' not in saved and 'unknown_packet_field' not in saved

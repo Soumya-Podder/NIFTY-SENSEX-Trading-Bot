@@ -10,6 +10,8 @@
 *.sqlite*
 *.log
 .paper_service.lock
+.paper_service.status.json
+.paper_service.status.tmp
 **/data/
 recovery-*/
 **/recovery-*/

@@ -15,6 +15,7 @@ FIELDS={"symbol","security_id","contract_id","exchange","expiry","strike","optio
         "identity_verified","metadata_source","source","timestamp","quote_update_timestamp","exchange_timestamp",
         "last_trade_timestamp","bid","ask","bid_qty","ask_qty","ltp","open","high","low","close","volume","oi",
         "packet_type","sequence","exchange_segment","raw_exchange_timestamp","depth",
+        "ordering_rejected","ordering_status","exchange_book_freshness_verified",
         "delta","gamma","theta","vega","iv","greeks_source","greeks_observed_at","greek_units",
         "chain_observed_at","previous_oi","spot","is_atm"}
 DEPTH_FIELDS={"bid_price","bid_quantity","bid_orders","ask_price","ask_quantity","ask_orders"}

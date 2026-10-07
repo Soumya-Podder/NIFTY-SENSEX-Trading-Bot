@@ -25,6 +25,7 @@ from .learning_monitor import LearningMonitor
 from .provenance import reviewed_report
 from .backtest.presentation import report_view, history_row
 from .runtime_health import execution_health, trading_readiness, completed_candles_ready
+from paper_service import supervisor_status
 from .chart_terminal import ChartTerminal
 from .chart_replay import ChartReplay
 from .backtest.data import dataset_metadata
@@ -309,7 +310,7 @@ def set_mode(request:ModeRequest):
 @app.get("/api/health")
 def health():
     runtime=execution_health(engine,paper)
-    return json_safe(redacted({"app":"healthy" if runtime["healthy"] else "degraded",**mode(),"runtime":runtime,"readiness":readiness(),"calendar":calendar_info(now_ist().date()),"engine":engine.status,"broker":paper.health(),"market_data":market_data.snapshot(),"api_recorder":api_recorder.status()}))
+    return json_safe(redacted({"app":"healthy" if runtime["healthy"] else "degraded",**mode(),"runtime":runtime,"supervisor":supervisor_status(),"readiness":readiness(),"calendar":calendar_info(now_ist().date()),"engine":engine.status,"broker":paper.health(),"market_data":market_data.snapshot(),"api_recorder":api_recorder.status()}))
 
 
 def readiness():

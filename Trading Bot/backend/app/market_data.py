@@ -63,6 +63,9 @@ class DhanMarketData:
         self.gateway=gateway
         self.store=store
         self.last_sequence={}
+        self.last_trade_times={}
+        self.ordering_rejections=0
+        self.last_ordering_rejection=None
         self.option_contracts={}
         self.option_quotes={}
         self.credential_generation=0
@@ -94,16 +97,20 @@ class DhanMarketData:
         return True
 
     def reconnect_if_idle(self):
-        if not self.configured or session_state() not in {"ENTRY_WINDOW","MANAGE_ONLY"}: return False
+        state=session_state()
+        with self.lock: held=[c for c in self.option_contracts.values() if c.get("qty",0)>0]
+        exit_monitor=state=="EXIT_ONLY" and bool(held) and now_ist().strftime("%H:%M")<"15:30"
+        if not self.configured or state not in {"ENTRY_WINDOW","MANAGE_ONLY"} and not exit_monitor: return False
         if time.monotonic()<self.reconnect_after: return False
         if time.monotonic()-self.last_attempt<30: return False
         now=now_ist()
         with self.lock:
             indices=[self.latest.get(symbol,{}) for symbol in self.symbol_names]
-            index_idle=any(not tick.get("quote_update_timestamp") or (now-local_time(tick["quote_update_timestamp"])).total_seconds()>=30 for tick in indices)
+            index_idle=not exit_monitor and any(not tick.get("quote_update_timestamp") or (now-local_time(tick["quote_update_timestamp"])).total_seconds()>=30 for tick in indices)
             depth_idle=any(not any(q.get("symbol")==symbol and quote_is_fresh(q,now,30) for q in self.option_quotes.values())
                 for symbol in self.symbol_names if any(c["symbol"]==symbol for c in self.option_contracts.values()))
-        if self.last_packet_at and (now-local_time(self.last_packet_at)).total_seconds()<30 and not index_idle and not depth_idle: return False
+            held_idle=any(not quote_is_fresh(self.option_quotes.get(c["contract_id"],{}),now,30) for c in held)
+        if self.last_packet_at and (now-local_time(self.last_packet_at)).total_seconds()<30 and not index_idle and not depth_idle and not held_idle: return False
         return self.refresh_credentials(self.client_id,self.access_token,force=True)
 
     def subscribe_options(self,contracts):
@@ -238,6 +245,8 @@ class DhanMarketData:
 
     def _on_connect(self, _feed) -> None:
         with self.lock:
+            self.last_sequence.clear()
+            self.option_quotes.clear(); self.latest.clear()
             self.connected = True
             self.error = None
             self.connection_http_status=None
@@ -285,6 +294,39 @@ class DhanMarketData:
                 detail=f"HTTP {status}" if status else type(exc).__name__
                 self.error=f"Market feed connection error: {detail}; retrying after backoff"
 
+    def _packet_order(self, key, packet, received):
+        # Dhan Full packets have LTT, not an exchange book timestamp or sequence.
+        # Equal LTT is legitimate: the book can change without a new trade.
+        sequence=packet.get("sequence",packet.get("seq"))
+        stamp=exchange_timestamp(packet.get("LTT"))
+        reason=None
+        with self.lock:
+            previous=self.last_sequence.get(key)
+            prior_trade=self.last_trade_times.get(key)
+            if sequence is not None:
+                try:
+                    value=int(sequence)
+                    if isinstance(sequence,bool) or str(value)!=str(sequence) or value<0: raise ValueError()
+                    if previous is not None and value<=previous: reason="NONINCREASING_SEQUENCE"
+                except (TypeError,ValueError,OverflowError): reason="INVALID_SEQUENCE"
+            elif previous is not None: reason="MISSING_PREVIOUSLY_OBSERVED_SEQUENCE"
+            if not reason and prior_trade and (not stamp or local_time(stamp)<local_time(prior_trade)):
+                reason="REGRESSING_OR_MISSING_TRADE_TIME"
+            if reason:
+                self.ordering_rejections+=1
+                self.last_ordering_rejection={"security_id":key[1],"exchange_segment":key[0],
+                    "received_at":received,"reason":reason}
+            else:
+                if sequence is not None: self.last_sequence[key]=value
+                if stamp: self.last_trade_times[key]=stamp
+        metadata={"ordering_rejected":bool(reason),"ordering_status":reason or
+            ("SEQUENCE_OBSERVED" if sequence is not None else "TRADE_TIME_NONDECREASING" if stamp else "UNAVAILABLE"),
+            "exchange_book_freshness_verified":False}
+        if reason and self.recorder:
+            self.recorder.record("ordering_rejected",{**metadata,"security_id":key[1],"exchange_segment":key[0],
+                "timestamp":received,"sequence":sequence,"last_trade_timestamp":stamp},self.credential_generation)
+        return metadata
+
     def _on_message(self, _feed, payload: Any) -> None:
         if self.stopping.is_set() or (_feed is not None and _feed is not self.feed): return
         packets = payload if isinstance(payload, list) else [payload]
@@ -297,15 +339,17 @@ class DhanMarketData:
             key=(int(packet.get("exchange_segment",0)),security_id)
             with self.lock: contract=self.option_contracts.get(key)
             if contract and packet.get("type")=="Full Data":
+                ordering=self._packet_order(key,packet,received)
+                if ordering["ordering_rejected"]: continue
                 depth=packet.get("depth") or []
                 bids=[d for d in depth if float(d.get("bid_price",0))>0 and int(d.get("bid_quantity",0))>0]
                 asks=[d for d in depth if float(d.get("ask_price",0))>0 and int(d.get("ask_quantity",0))>0]
                 bid=max(bids,key=lambda d:float(d["bid_price"])) if bids else {}
                 ask=min(asks,key=lambda d:float(d["ask_price"])) if asks else {}
-                quote={**contract,"timestamp":received,"quote_update_timestamp":received,
+                quote={**contract,**ordering,"timestamp":received,"quote_update_timestamp":received,
                     "exchange_timestamp":exchange_timestamp(packet.get("LTT")),"last_trade_timestamp":exchange_timestamp(packet.get("LTT")),
                     "source":"dhan_market_feed_depth","credential_generation":self.credential_generation,
-                    "packet_type":packet.get("type"),"sequence":packet.get("sequence") or packet.get("seq"),
+                    "packet_type":packet.get("type"),"sequence":packet.get("sequence",packet.get("seq")),
                     "exchange_segment":packet.get("exchange_segment"),"raw_exchange_timestamp":packet.get("LTT"),
                     "depth":depth,
                     "bid":float(bid.get("bid_price",0)),"bid_qty":int(bid.get("bid_quantity",0)),
@@ -321,12 +365,14 @@ class DhanMarketData:
             symbol = self.security_to_symbol.get(security_id)
             if not symbol or key[0]!=0:
                 continue
+            ordering=self._packet_order(key,packet,received)
+            if ordering["ordering_rejected"]: continue
             ltp = float(packet["LTP"]) if packet.get("LTP") is not None else None
             if ltp is None: continue
             close = float(packet["close"]) if packet.get("close") not in (None, "") else None
-            tick = {"symbol": symbol, "security_id": security_id,
+            tick = {**ordering,"symbol": symbol, "security_id": security_id,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "packet_type":packet.get("type"),"sequence":packet.get("sequence") or packet.get("seq"),
+                    "packet_type":packet.get("type"),"sequence":packet.get("sequence",packet.get("seq")),
                     "exchange_segment":packet.get("exchange_segment"),"raw_exchange_timestamp":packet.get("LTT"),
                     "ltp": ltp,
                     "open": packet.get("open"), "high": packet.get("high"), "low": packet.get("low"),
@@ -340,17 +386,10 @@ class DhanMarketData:
             tick["quote_update_timestamp"]=received
             if self.recorder: tick["observation_id"]=self.recorder.record("underlying",tick,self.credential_generation)
             if self.store:
-                sequence=packet.get("sequence") or packet.get("seq")
-                previous=self.last_sequence.get(security_id)
-                try:
-                    gap_status=("gap" if previous is not None and int(sequence)!=int(previous)+1 else "observed")
-                    self.last_sequence[security_id]=int(sequence)
-                except (TypeError,ValueError):
-                    gap_status="unavailable"
                 self.recent_market_events.append(
                     {"event_type":"market_feed","received_at":received,"symbol":symbol,
-                     "security_id":security_id,"sequence":sequence,"previous_sequence":previous,
-                     "sequence_status":gap_status,
+                     "security_id":security_id,"sequence":tick["sequence"],
+                     "sequence_status":ordering["ordering_status"],
                      "raw":packet,"normalized":tick,"source":"dhan_market_feed"})
             with self.lock:
                 self.latest[symbol] = tick
@@ -372,6 +411,9 @@ class DhanMarketData:
                 "options_by_symbol":{s:{"subscribed":sum(c["symbol"]==s for c in option_contracts),
                     "fresh_depth":sum(q["symbol"]==s and quote_is_fresh(q) for q in option_quotes)} for s in self.symbol_names},
                 "credential_generation":self.credential_generation,
+                "ordering":{"rejected_packets":self.ordering_rejections,"last_rejection":self.last_ordering_rejection,
+                    "exchange_book_freshness_verified":False,
+                    "scope":"Reject observed sequence/trade-time regressions; Dhan Full has no exchange sequence or book timestamp. Receipt age alone cannot prove exchange freshness."},
                 "tick_storage":self.recorder.status() if self.recorder else {"mode":"bounded_memory","capacity":512,"buffered":len(self.recent_market_events),"persistent_raw_websocket_ticks":False}}
 
 

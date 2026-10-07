@@ -27,6 +27,7 @@ def session_state(now=None, *, start="09:15", cutoff="14:30", exit_at="15:05"):
 
 
 def quote_is_fresh(quote, now=None, max_age=2):
+    if quote.get("ordering_rejected"): return False
     # A last-trade timestamp is not evidence that the bid/ask book was
     # refreshed. Runtime adapters must provide quote_update_timestamp. The
     # fallback keeps isolated legacy fixtures readable; Dhan REST snapshots

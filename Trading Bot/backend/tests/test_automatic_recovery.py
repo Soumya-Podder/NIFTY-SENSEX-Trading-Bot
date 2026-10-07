@@ -508,6 +508,7 @@ def test_unchanged_failed_repair_does_not_flood_durable_history(tmp_path,monkeyp
     ({'readiness':{'exit_status':'WAITING_FOR_DEPTH','positions':[{'pending':True}]}},False),
     ({'readiness':{'exit_status':'NO_POSITION'}},False),
     ({'app':'unavailable'},False),
+    ({'app':'degraded'},True),
 ])
 def test_supervisor_restarts_stalled_execution_only_with_verified_flat_paper_account(change,stalled):
     from paper_service import execution_stalled
@@ -536,3 +537,145 @@ def test_alive_worker_does_not_prove_a_stale_execution_loop_recovered(tmp_path):
     engine.status['last_cycle']=clock['now'].isoformat()
     engine._recover_once()
     assert engine.status['recovery']['components']['execution_loop']['state']=='RECOVERED'
+
+
+@pytest.mark.parametrize('protection_age,dead,stalled',[(2,[],False),(65,[],True),
+    (None,['paper-protection'],True),(None,[],False)])
+def test_occupied_account_restart_uses_protection_liveness_not_missing_depth(protection_age,dead,stalled):
+    from paper_service import execution_stalled
+    health={'app':'degraded','runtime':{'heartbeat_age_seconds':65,
+        'protection_heartbeat_age_seconds':protection_age,'dead_workers':dead},
+        'broker':{'healthy':True,'mode':'paper'},
+        'readiness':{'exit_status':'WAITING_FOR_DEPTH','positions':[{'pending':True}]}}
+    assert execution_stalled(health) is stalled
+
+
+def test_stalled_protection_blocks_entry_even_when_main_worker_is_current(tmp_path):
+    from paper_service import execution_stalled
+    broker,store,clock=plan_account(tmp_path)
+    engine=PaperEngine(Settings(_env_file=None),store,None,broker,clock=lambda:clock['now'])
+    engine.threads=[SimpleNamespace(name=name,is_alive=lambda:True) for name in ('paper-engine','paper-protection')]
+    engine.status.update(last_cycle=clock['now'].isoformat(),
+        last_protection_cycle=(clock['now']-timedelta(seconds=65)).isoformat())
+    runtime=execution_health(engine,broker,clock['now'])
+    assert not runtime['operational'] and runtime['protection_heartbeat_age_seconds']==65
+    assert execution_stalled({'app':'degraded','runtime':runtime,'broker':broker.health(),
+        'readiness':{'positions':[{'pending':True}],'exit_status':'WAITING_FOR_DEPTH'}})
+
+
+def test_watchdog_grace_and_owned_api_timeout_do_not_confuse_data_failure():
+    from paper_service import restart_reason
+    assert restart_reason({},61,89) is None
+    assert restart_reason({},59,100) is None
+    assert restart_reason({},61,100)=='OWNED_API_UNRESPONSIVE'
+    assert restart_reason({'app':'degraded','runtime':{'heartbeat_age_seconds':2},
+        'broker':{'healthy':True,'mode':'paper'},'readiness':{'positions':[],'exit_status':'NO_POSITION'}},61,100) is None
+
+
+@pytest.mark.parametrize('hour,minute,held,reconnect',[(15,6,True,True),(15,6,False,False),(15,31,True,False)])
+def test_pending_exit_can_reconnect_stale_depth_until_market_close(monkeypatch,hour,minute,held,reconnect):
+    from app.market_data import DhanMarketData
+    from app.session import IST
+    now=__import__('datetime').datetime(2026,9,4,hour,minute,tzinfo=IST)
+    monkeypatch.setattr('app.market_data.now_ist',lambda:now)
+    monkeypatch.setattr('app.market_data.session_state',lambda:'EXIT_ONLY')
+    monkeypatch.setattr('app.market_data.time.monotonic',lambda:100.)
+    feed=DhanMarketData('test','test-token','NIFTY')
+    feed.option_contracts={(2,'123'):{'symbol':'NIFTY','contract_id':'held','qty':10 if held else 0}}
+    calls=[]
+    monkeypatch.setattr(feed,'refresh_credentials',lambda *a,**k:calls.append(1) or True)
+    assert feed.reconnect_if_idle() is reconnect and bool(calls) is reconnect
+
+
+def test_supervisor_reads_only_committed_occupied_ledger_and_retains_pending_exit(tmp_path):
+    from paper_service import durable_account
+    from tests.test_paper import enter
+    broker,store,clock=plan_account(tmp_path)
+    order=enter(broker,clock,qty=10)
+    broker.request_exit(order['id'],'SESSION_CLOSE',clock['now'])
+    before=store.get_record('paper','account')
+    assert durable_account(store.path)==before
+    restored=__import__('app.broker',fromlist=['PaperBroker']).PaperBroker(store,30000,broker.cost,
+        clock=lambda:clock['now'],policy=broker.policy)
+    assert restored.positions()['positions'][0]['exit_request']==before['positions'][0]['exit_request']
+    assert not store.list_records('trades')
+    bad=dict(before,positions=[dict(before['positions'][0],qty=0)])
+    store.put_record('paper','account',bad)
+    assert durable_account(store.path) is None
+    assert store.get_record('paper','account')==bad
+    absent=tmp_path/'must-not-be-created.db'
+    assert durable_account(absent) is None and not absent.exists()
+
+
+def test_supervisor_history_is_bounded_and_deduplicates_unchanged_state(tmp_path,monkeypatch):
+    import paper_service
+    path=tmp_path/'supervisor.json'
+    monkeypatch.setattr(paper_service,'STATUS',path)
+    monkeypatch.setattr(paper_service,'supervisor_status',lambda:__import__('json').loads(path.read_text()) if path.exists() else {})
+    paper_service.record_status('RESTART_REQUESTED','OWNED_API_UNRESPONSIVE',[100.])
+    paper_service.record_status('RESTART_REQUESTED','OWNED_API_UNRESPONSIVE',[100.])
+    assert len(paper_service.supervisor_status()['history'])==1
+    for i in range(60): paper_service.record_status('RECOVERED',str(i),[100.])
+    assert len(paper_service.supervisor_status()['history'])==50
+
+
+@pytest.mark.parametrize('occupied,blocked,unowned',[(False,False,False),(True,False,False),
+    (True,True,False),(True,False,True)])
+def test_supervisor_timeout_restarts_only_owned_api_then_verifies_new_workers(tmp_path,monkeypatch,occupied,blocked,unowned):
+    import paper_service,msvcrt
+    from tests.test_paper import enter
+    broker,store,clock=plan_account(tmp_path)
+    if occupied:
+        order=enter(broker,clock,qty=10)
+        broker.request_exit(order['id'],'SESSION_CLOSE',clock['now'])
+    committed=store.get_record('paper','account')
+    root=tmp_path/'backend'; root.mkdir()
+    monkeypatch.setattr(paper_service,'ROOT',root)
+    monkeypatch.setattr(paper_service,'STATUS',root/'status.json')
+    read_account=paper_service.durable_account
+    monkeypatch.setattr(paper_service,'durable_account',lambda:None if blocked else read_account(store.path))
+    monkeypatch.setattr(paper_service,'datetime',SimpleNamespace(now=lambda _:clock['now']))
+    read_status=paper_service.supervisor_status
+    monkeypatch.setattr(paper_service,'supervisor_status',lambda:read_status(root/'status.json'))
+    monkeypatch.setattr(msvcrt,'locking',lambda *a:None)
+    requests={'count':0}; started=[]; stopped=[]; ticks={'value':0}; sleeps={'count':0}
+    def monotonic():
+        ticks['value']+=40
+        return ticks['value']
+    monkeypatch.setattr(paper_service.time,'monotonic',monotonic)
+    def start(*args,**kwargs):
+        child=SimpleNamespace(pid=len(started)+1,poll=lambda:None)
+        started.append(child); return child
+    monkeypatch.setattr(paper_service.subprocess,'Popen',start)
+    monkeypatch.setattr(paper_service,'stop_owned_api',lambda child:stopped.append(child))
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self,*args): pass
+    def request(*args,**kwargs):
+        requests['count']+=1
+        if requests['count']<=6: raise TimeoutError()
+        return Response()
+    monkeypatch.setattr(paper_service.urllib.request,'urlopen',request)
+    monkeypatch.setattr(paper_service.json,'load',lambda _: {'app':'healthy','runtime':{'healthy':True}})
+    import socket
+    class Socket:
+        def __enter__(self): return self
+        def __exit__(self,*args): pass
+        def connect_ex(self,*args): return 0 if unowned else 1
+    monkeypatch.setattr(socket,'socket',lambda *a:Socket())
+    class Finished(Exception): pass
+    def sleep(*args):
+        sleeps['count']+=1
+        if sleeps['count']==7: raise Finished()
+    monkeypatch.setattr(paper_service.time,'sleep',sleep)
+    with pytest.raises(Finished): paper_service.main()
+    if unowned:
+        assert not started and not stopped
+    elif blocked:
+        assert len(started)==1 and not stopped
+        assert paper_service.supervisor_status()['state']=='BLOCKED'
+    else:
+        assert len(started)==2 and stopped==[started[0]]
+        assert paper_service.supervisor_status()['state']=='RECOVERED'
+        assert [e['state'] for e in paper_service.supervisor_status()['history']][-2:]==['RESTART_REQUESTED','RECOVERED']
+    assert store.get_record('paper','account')==committed and not store.list_records('trades')

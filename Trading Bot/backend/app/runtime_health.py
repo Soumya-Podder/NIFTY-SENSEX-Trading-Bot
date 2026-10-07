@@ -23,19 +23,26 @@ def execution_health(engine, broker, now=None):
     # clock discrepancies and genuinely old heartbeats.
     if age is not None and -15<=age<0: age=0.0
     fresh=age is not None and 0<=age<=15
+    protection_stamp=engine.status.get("last_protection_cycle")
+    try: protection_age=(local_time(now)-local_time(protection_stamp)).total_seconds() if protection_stamp else None
+    except (ValueError,TypeError): protection_age=None
+    if protection_age is not None and -15<=protection_age<0: protection_age=0.0
     errors={key:engine.status[key] for key in ("error","persistence_error","selector_error","feed_watch_error",
             "data_error","quote_error","entry_error","exit_error","protection_error") if engine.status.get(key)}
+    protection_fresh=not any(t.name=="paper-protection" for t in threads) or (
+        protection_age is not None and 0<=protection_age<=15)
     broker_health=broker.health()
-    healthy=fresh and bool(threads) and not dead and not errors and broker_health["healthy"]
+    healthy=fresh and protection_fresh and bool(threads) and not dead and not errors and broker_health["healthy"]
     # A rejected entry is an audit result, not a permanent readiness latch.
     symbol_error=bool(errors.get("data_error")) and any(
         health.get("error")==errors["data_error"] for health in engine.status.get("data_symbols",{}).values())
-    operational=fresh and bool(threads) and not dead and not {k:v for k,v in errors.items()
+    operational=fresh and protection_fresh and bool(threads) and not dead and not {k:v for k,v in errors.items()
         if k!="entry_error" and not (k=="data_error" and symbol_error)} and broker_health["healthy"]
     advisory={key:engine.status[key] for key in ("feedback_error","context_errors","signal_journal_error","management_error","paper_learning_error","fee_preparation_error","recovery_journal_error") if engine.status.get(key)}
     renewal=engine.status.get("credential_renewal") or {}
     if renewal.get("status") in {"EXPIRED","RENEWAL_FAILED"}: advisory["credential_renewal"]=renewal
     return {"healthy":healthy,"operational":operational,"heartbeat_age_seconds":age,"dead_workers":dead,
+            "protection_heartbeat_age_seconds":protection_age,
             "workers":[{"name":t.name,"alive":t.is_alive()} for t in threads],
             "advisory_errors":advisory,
             "errors":errors,"broker":broker_health,"market_execution_validated":False}

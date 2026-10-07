@@ -12,6 +12,49 @@ from app.store import Store
 from tests.test_paper import plan_account, enter, quote, contract, TestFees
 
 
+def test_option_packet_order_rejects_regression_without_refreshing_executable_book(monkeypatch):
+    from types import SimpleNamespace
+    clock={'now':datetime(2026,9,4,10,0,tzinfo=IST)}
+    monkeypatch.setattr('app.market_data.datetime',SimpleNamespace(now=lambda _:clock['now']))
+    feed=DhanMarketData('test','token','NIFTY')
+    feed.option_contracts={(2,'123'):contract()}
+    recorded=[]
+    feed.recorder=SimpleNamespace(record=lambda kind,q,g:recorded.append((kind,dict(q))) or str(len(recorded)))
+    packet={'type':'Full Data','exchange_segment':2,'security_id':'123','sequence':42,
+        'LTT':clock['now'].isoformat(),'LTP':100,'depth':[{'bid_price':99,'ask_price':100,'bid_quantity':100,'ask_quantity':100}]}
+    feed._on_message(None,packet)
+    original=feed.executable_quotes()[contract()['contract_id']]
+    clock['now']+=timedelta(seconds=1)
+    for sequence in (41,42,'invalid',None): feed._on_message(None,{**packet,'sequence':sequence})
+    feed._on_message(None,{**packet,'sequence':43,'LTT':(clock['now']-timedelta(seconds=5)).isoformat()})
+    assert feed.executable_quotes()[contract()['contract_id']]==original
+    assert feed.ordering_rejections==5
+    assert len([kind for kind,q in recorded if kind=='ordering_rejected'])==5
+    feed._on_message(None,{**packet,'sequence':43})  # Equal last-trade time, new book sequence.
+    assert feed.executable_quotes()[contract()['contract_id']]['timestamp']==clock['now'].isoformat()
+    assert not feed.executable_quotes()[contract()['contract_id']]['exchange_book_freshness_verified']
+
+
+def test_documented_dhan_packets_without_sequence_remain_usable_but_not_exchange_verified(monkeypatch):
+    from app.session import quote_is_fresh
+    feed=DhanMarketData('test','token','NIFTY')
+    feed.option_contracts={(2,'123'):contract()}
+    now=datetime.now(IST)
+    packet={'type':'Full Data','exchange_segment':2,'security_id':'123','LTT':now.isoformat(),
+        'LTP':100,'depth':[{'bid_price':99,'ask_price':100,'bid_quantity':100,'ask_quantity':100}]}
+    feed._on_message(None,packet)
+    feed._on_message(None,packet)  # No trade does not imply no book update.
+    q=feed.executable_quotes()[contract()['contract_id']]
+    assert quote_is_fresh(q) and q['sequence'] is None and not q['exchange_book_freshness_verified']
+    assert not quote_is_fresh({**q,'ordering_rejected':True})
+    feed._on_message(None,{**packet,'sequence':0})
+    assert feed.last_sequence[(2,'123')]==0
+    feed._on_connect(None)
+    assert not feed.executable_quotes() and not feed.last_sequence
+    feed._on_message(None,{**packet,'sequence':0})  # Sequence may reset on a new connection.
+    assert quote_is_fresh(feed.executable_quotes()[contract()['contract_id']])
+
+
 def test_flat_unchanged_mark_does_not_write_account_again(tmp_path,monkeypatch):
     broker,store,clock=plan_account(tmp_path)
     broker.mark({},clock['now'])

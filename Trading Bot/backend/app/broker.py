@@ -49,7 +49,11 @@ class PaperBroker:
         self._committed_state=deepcopy(self.state)
         self.persistence_error=None
 
-    def health(self): return {"healthy":self.persistence_error is None,"mode":"paper","simulated_execution":True,"persistence_error":self.persistence_error}
+    def health(self): return {"healthy":self.persistence_error is None,"mode":"paper","simulated_execution":True,"persistence_error":self.persistence_error,
+        "fill_model":"Observed top ask entry / top bid exit, bounded by displayed quantity; partial exits supported",
+        "live_performance_validated":False,
+        "fill_limitations":["No queue priority, submission latency, competing depth consumption or market impact model",
+            "Receipt age does not prove exchange book freshness; simulated P&L is unvalidated paper observation"]}
 
     def recover_persistence(self):
         """Retry the committed account write; never reconstruct or invent a fill."""

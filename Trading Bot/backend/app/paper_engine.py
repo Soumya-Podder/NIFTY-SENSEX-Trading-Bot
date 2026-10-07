@@ -164,7 +164,7 @@ class PaperEngine:
             fresh=age is not None and 0<=age<=15
             self._record_recovery("execution_loop","HEALTHY" if fresh else "RETRYING",
                 "Verified" if fresh else "Execution heartbeat unavailable or stale",
-                "Execution worker retries; supervisor may restart its stalled API only after flat-account checks")
+                "Execution worker retries; supervisor can restart its owned stalled API after durable account checks")
         self._repair("account_storage",lambda:self.broker.health()["healthy"],self.broker.recover_persistence,
             "Account persistence unavailable","Retry the last committed account write",retry=5)
         recorder=getattr(self.market,"recorder",None)
@@ -343,6 +343,7 @@ class PaperEngine:
         while not self.stop_event.is_set():
             try: self._protect_once()
             except Exception as exc: self.status["protection_error"]=str(exc)[:300]
+            self.status["last_protection_cycle"]=self._now().isoformat()
             self.stop_event.wait(.5)
 
     def _loop(self):
