@@ -16,12 +16,16 @@ class CostModel:
         self.memory = {}
         self.paper = paper
         self.cache_only = ContextVar("fee_cache_only",default=False)
+        self.on_missing = ContextVar("fee_on_missing",default=None)
 
     @contextmanager
-    def cached_only(self):
+    def cached_only(self, on_missing=None):
         token=self.cache_only.set(True)
+        callback=self.on_missing.set(on_missing)
         try: yield
-        finally: self.cache_only.reset(token)
+        finally:
+            self.on_missing.reset(callback)
+            self.cache_only.reset(token)
 
     def _paper_reserve(self,contract,buy,sell,qty,window,transaction):
         now=datetime.now(timezone.utc)
@@ -48,6 +52,10 @@ class CostModel:
             reserve=self._paper_reserve(contract,buy_price,sell_price,qty,window,transaction)
             if reserve: return reserve
         if self.cache_only.get():
+            callback=self.on_missing.get()
+            if callback:
+                callback(contract,buy_price,sell_price,qty,window,transaction)
+                raise ValueError("Waiting for broker fee preparation")
             raise ValueError("Fresh broker fee reserve required before final paper admission")
         if self.paper:
             # Prepare a small price envelope outside final quote-sensitive admission.

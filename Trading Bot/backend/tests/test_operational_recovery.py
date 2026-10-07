@@ -49,12 +49,12 @@ def test_sizing_enforces_combined_cash_risk_and_two_sided_depth(tmp_path):
     broker,_,clock=plan_account(tmp_path)
     q=quote(contract(),clock)
     sized=size_plan_order(broker.policy,broker.snapshot(),q,90,TestFees())
-    assert sized['quantity']==50  # 550 price/spread risk + 20 estimated charges <= 600
+    assert sized['quantity']==80  # 880 price/spread risk + 20 charges; nine lots exceed the daily 1000.
     assert size_plan_order(broker.policy,broker.snapshot(),{**q,'bid_qty':20},90,TestFees())['quantity']==20
     assert size_plan_order(broker.policy,broker.snapshot(),{**q,'bid_qty':9},90,TestFees()) is None
     small={**broker.snapshot(),'cash':7000}
     assert size_plan_order(broker.policy,small,q,90,TestFees()) is None  # cash reserve plus entry charges
-    with pytest.raises(ValueError,match='risk'): enter(broker,clock,qty=60)
+    with pytest.raises(ValueError,match='risk'): enter(broker,clock,qty=100)
 
 
 def test_paper_premium_budget_uses_account_capital_not_fixed_30000(tmp_path):

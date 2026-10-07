@@ -204,7 +204,7 @@ class SimplePaperEngine(PaperEngine):
                     continue
                 sizing = size_plan_order(self.broker.policy, account, contract, planned["stop_price"], self.broker.cost)
                 if sizing is None:
-                    reason = f"No whole lot fits cash, depth and ₹{self.broker.policy.trade_risk:g} risk"
+                    reason = f"No whole lot fits cash, depth, ₹{self.broker.policy.trade_risk:g} risk per lot and remaining daily allocation"
                     continue
                 quantity = sizing["quantity"]
                 economics = net_economics(contract["ask"], contract["bid"], planned["stop_price"],

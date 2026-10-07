@@ -1,6 +1,7 @@
 import threading
 import time
 import math
+from copy import deepcopy
 from collections import Counter
 from datetime import timedelta
 import pandas as pd
@@ -29,7 +30,11 @@ class PaperEngine:
         self.worker_targets={}
         self.worker_recovery_after={}
         self.credential_renewal_after=0
-        self.recorder_recovery_after=0
+        self.recovery_after={}; self.recovery_dirty=False
+        saved=store.get_record("paper_recovery","status",{}) or {}
+        self.status["recovery"]={"state":"STARTING","checked_at":None,"components":{},
+            "history":saved.get("history",[])[-50:],"authority":"PAPER_ONLY",
+            "scope":"Verified runtime repairs; entry safeguards and live authority are unchanged"}
 
         self.pipeline=DecisionPipeline(store.active_learning_policies(),self.publish)
         self.risk=RiskEngine(settings.max_trade_risk_rupees,settings.daily_loss_limit_rupees,
@@ -93,14 +98,7 @@ class PaperEngine:
     def _feed_watch(self):
         while not self.stop_event.is_set():
             try:
-                self._restart_dead_workers()
-                recorder=getattr(self.market,"recorder",None)
-                if recorder and time.monotonic()>=self.recorder_recovery_after and not recorder.status()["worker_alive"]:
-                    self.recorder_recovery_after=time.monotonic()+30
-                    recorder.start()
-                    self.status["recorder_recovery"]={"attempted_at":self._now().isoformat(),"status":"RESTART_REQUESTED"}
-                if self.market and hasattr(self.market,"reconnect_if_idle"):
-                    self.market.reconnect_if_idle()
+                self._recover_once()
                 if getattr(self.gateway,"credential_provider",None) and self._session() not in {"ENTRY_WINDOW","MANAGE_ONLY"} and not self.broker.positions()["positions"] and time.monotonic()>=self.credential_renewal_after:
                     from .credential_recovery import renew_project_token
                     self.credential_renewal_after=time.monotonic()+300
@@ -108,6 +106,115 @@ class PaperEngine:
                 self.status["feed_watch_error"]=None
             except Exception as exc: self.status["feed_watch_error"]=type(exc).__name__+": waiting to reconnect market feed"
             self.stop_event.wait(2)
+
+    def _record_recovery(self,component,state,cause,action,*,attempted=False,error_type=None):
+        recovery={**self.status["recovery"],"components":dict(self.status["recovery"]["components"])}
+        previous=recovery["components"].get(component,{})
+        if state=="HEALTHY" and previous.get("state") in {"RETRYING","BLOCKED","RECOVERED"}: state="RECOVERED"
+        row={"state":state,"cause":cause,"action":action,
+            "attempts":previous.get("attempts",0)+int(attempted),"error_type":error_type}
+        changed=any(previous.get(k)!=v for k,v in row.items())
+        row["checked_at"]=self._now().isoformat()
+        recovery["components"][component]=row
+        if changed:
+            self.recovery_dirty=True
+            if state!="HEALTHY":
+                recovery["history"]=(recovery["history"]+[{"component":component,**row}])[-50:]
+        self.status["recovery"]=recovery
+
+    def _repair(self,component,verify,action,cause,repair,*,retry=30,always=False):
+        """One failed repair cannot interrupt other repairs or protective workers."""
+        attempted=False
+        error_type=self.status["recovery"]["components"].get(component,{}).get("error_type")
+        try:
+            healthy=verify()
+            if not healthy:
+                self._record_recovery(component,"RETRYING" if action else "BLOCKED",cause,repair,error_type=error_type)
+            if action and (not healthy or always) and time.monotonic()>=self.recovery_after.get(component,0):
+                # Reserve before invoking an action, including actions that raise.
+                self.recovery_after[component]=time.monotonic()+retry
+                attempted=True
+                attempted=action() is not False
+                healthy=verify()
+            if healthy:
+                self.recovery_after.pop(component,None); error_type=None
+        except Exception as exc:
+            healthy=False; error_type=type(exc).__name__
+        self._record_recovery(component,"HEALTHY" if healthy else "RETRYING" if action else "BLOCKED",
+            "Verified" if healthy else cause,repair,attempted=attempted,error_type=error_type)
+
+    def _recover_once(self):
+        if self.stop_event.is_set(): return
+        if getattr(self.gateway,"credential_provider",None) and hasattr(self.gateway,"refresh_credentials"):
+            def reload_credentials():
+                previous=self.last_credential_generation
+                self._refresh_runtime_credentials(self._now())
+                return previous!=self.last_credential_generation
+            self._repair("credentials",lambda:self.status.get("credentials",{}).get("configured",False) and self.last_credential_generation==self.gateway.credential_generation,
+                reload_credentials,"Current credentials have not loaded","Reload project .env in REST and WebSocket",retry=2,always=True)
+        if self.threads:
+            def restart_workers():
+                dead=any(not t.is_alive() for t in self.threads)
+                self._restart_dead_workers()
+                return dead and all(t.is_alive() for t in self.threads)
+            self._repair("workers",lambda:all(t.is_alive() for t in self.threads),restart_workers,
+                "A paper worker has stopped","Restart only stopped workers; never duplicate a running worker",retry=5)
+            from .runtime_health import execution_health
+            age=execution_health(self,self.broker,self._now())["heartbeat_age_seconds"]
+            fresh=age is not None and 0<=age<=15
+            self._record_recovery("execution_loop","HEALTHY" if fresh else "RETRYING",
+                "Verified" if fresh else "Execution heartbeat unavailable or stale",
+                "Execution worker retries; supervisor may restart its stalled API only after flat-account checks")
+        self._repair("account_storage",lambda:self.broker.health()["healthy"],self.broker.recover_persistence,
+            "Account persistence unavailable","Retry the last committed account write",retry=5)
+        recorder=getattr(self.market,"recorder",None)
+        if recorder:
+            def restart_recorder():
+                if recorder.status()["worker_alive"]: return False
+                recorder.start()
+                self.status["recorder_recovery"]={"attempted_at":self._now().isoformat(),"status":"RESTART_REQUESTED"}
+            self._repair("quote_recorder",lambda:recorder.status()["worker_alive"] and not recorder.status().get("error"),
+                restart_recorder,"Quote recording unavailable","Restart stopped recorder; retain gaps and storage errors")
+        if self.market and hasattr(self.market,"reconnect_if_idle"):
+            def reconnect():
+                if self.market.reconnect_if_idle(): return True
+                before=getattr(self.market,"last_attempt",None)
+                if hasattr(self.market,"start"): self.market.start()
+                return before!=getattr(self.market,"last_attempt",None)
+            self._repair("market_feed",lambda:bool(getattr(self.market,"connected",False)) and not getattr(self.market,"error",None),
+                reconnect,"Feed disconnected or awaiting provider backoff","Reconnect through feed backoff; require fresh books before entry",retry=2,always=True)
+        notifier=getattr(self.broker,"notifier",None)
+        if notifier and notifier.enabled and notifier.configured:
+            self._repair("telegram_worker",lambda:notifier.status()["worker_alive"],notifier.start,
+                "Trade notification worker stopped","Restart existing notification worker; retain queued trade messages")
+        for key in ("error","selector_error","quote_error","exit_error","protection_error","persistence_error"):
+            if self.status.get(key) or key in self.status["recovery"]["components"]:
+                self._record_recovery(key,"RETRYING" if self.status.get(key) else "HEALTHY",
+                    "Worker has not yet completed a successful retry" if self.status.get(key) else "Verified",
+                    "Existing worker retries; unresolved code errors remain blocked")
+        from .runtime_health import completed_candles_ready
+        now=self._now(); required=self._session() in {"ENTRY_WINDOW","MANAGE_ONLY"} and now.strftime("%H:%M")>="09:16"
+        with self.lock:
+            candles=completed_candles_ready(self.frames,self.status.get("data_symbols",{}),now)
+        for symbol in ("NIFTY","SENSEX"):
+            if hasattr(self,"refresh_symbol_data"):
+                ready=candles.get(symbol,False)
+                self._record_recovery("candles:"+symbol,"WAITING_SESSION" if not required else "HEALTHY" if ready else "RETRYING",
+                    "Market session required" if not required else "Verified" if ready else "Completed candles unavailable or awaiting refetch",
+                    "Candle worker refetches current-session gaps without manufacturing bars")
+            if hasattr(self,"context_at"):
+                ready=self.context_at(symbol,now).get("positioning",{}).get("status")=="OBSERVED" if required else False
+                self._record_recovery("chain:"+symbol,"WAITING_SESSION" if not required else "HEALTHY" if ready else "RETRYING",
+                    "Market session required" if not required else "Verified" if ready else "Current option-chain context unavailable",
+                    "Context worker refreshes the broker chain; missing OI is never invented")
+        recovery=self.status["recovery"]
+        recovery.update(checked_at=self._now().isoformat(),state="DEGRADED" if any(
+            c["state"] in {"RETRYING","BLOCKED"} for c in recovery["components"].values()) else "MONITORING")
+        if self.recovery_dirty:
+            try:
+                self.store.save_bundle([("paper_recovery","status",deepcopy(recovery))],timeout=.25)
+                self.recovery_dirty=False; self.status["recovery_journal_error"]=None
+            except Exception as exc: self.status["recovery_journal_error"]=type(exc).__name__
 
     def _feedback_loop(self):
         # Validation can take minutes. Never hold up another position's exit while
@@ -275,6 +382,8 @@ class PaperEngine:
             # Errors produced with the previous token no longer describe the
             # current client. A new request may set a fresh error afterwards.
             self.status.pop("data_error",None)
+            self.status.pop("credential_renewal",None)
+            self.credential_renewal_after=0
             for symbol_status in self.status.get("data_symbols",{}).values():
                 symbol_status.pop("error",None)
             self.last_credential_generation=self.gateway.credential_generation
@@ -305,7 +414,7 @@ class PaperEngine:
             names=", ".join(item.get("name",item.get("id","")) for item in strategies) or "configured strategy portfolio"
             message=(f"PAPER SESSION START · {day}\n"
                 f"Monitoring: {self.settings.session_start}–{self.settings.session_exit} IST · final report {self.settings.telegram_session_report_time} IST\n"
-                f"Capital: ₹{account['initial_capital']:,.2f} · Per-trade risk: ₹{self.settings.max_trade_risk_rupees:,.2f}\n"
+                f"Capital: ₹{account['initial_capital']:,.2f} · Risk per lot: ₹{self.settings.max_trade_risk_rupees:,.2f}\n"
                 f"Daily hard loss limit: ₹{self.settings.hard_daily_halt_rupees:,.2f}\n"
                 f"Strategies: {names}\nPaper execution only; live-money orders are disabled.")
             if notifier.notify(message):
@@ -410,6 +519,10 @@ class PaperEngine:
                         except Exception as exc:
                             self.status["event_error"]=str(exc)[:300]
         account=self.broker.snapshot()
+        if not account["positions"] and self.broker.health()["healthy"]:
+            # Either protective worker may complete the durable exit. An old
+            # error in the other worker must not latch entry readiness forever.
+            self.status["exit_error"]=None; self.status["protection_error"]=None
         if session!="ENTRY_WINDOW" or not account["enabled"] or account["halted"] or not account["valuation_complete"]:
             self.status["state"]="HALTED" if account["halted"] else "PAUSED" if not account["enabled"] else session
             if self.last_status!=self.status["state"]:
@@ -507,7 +620,7 @@ class PaperEngine:
                 # Recalculate exact quantity charges; percentage estimates are not used for risk.
                 fee=self.broker.cost.quote(contract,price,stop_price,quantity)
                 risk=quantity*((price-stop_price)+contract["ask"]-contract["bid"])+fee["total"]
-                budget=(min(self.broker.policy.trade_risk,self.broker.policy.remaining(account["loss_ledger"],account["open_risk_rupees"])) if self.broker.policy else
+                budget=(self.broker.policy.risk_budget(account["loss_ledger"],quantity//lot,account["open_risk_rupees"]) if self.broker.policy else
                         available_risk(self.settings.max_trade_risk_rupees,self.settings.daily_loss_limit_rupees,
                             account["session_pnl"],account["open_risk_rupees"],self.settings.max_correlated_risk_rupees,same_direction))
                 if risk>budget: continue

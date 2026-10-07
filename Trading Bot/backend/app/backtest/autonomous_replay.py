@@ -15,7 +15,7 @@ from ..autonomous_paper import AutonomousPaperEngine
 from ..autonomous_policy import VERSION
 from ..broker import PaperBroker
 from ..store import Store, json_safe
-from ..risk import PlanRiskPolicy
+from ..risk import PlanRiskPolicy, SIZING_VERSION
 from ..session import session_state, quote_is_fresh
 from ..market_structure import analyze_structure
 from ..market_context import build_context
@@ -25,11 +25,11 @@ from .reports import report_from_run
 from .metrics import metrics
 
 
-def captured_events(data_dir, start, end, cancel=lambda: False):
+def captured_events(data_dir, start, end, cancel=lambda: False, *, compact_books=False):
     if cancel(): raise InterruptedError("Cancelled")
     files = sorted((Path(data_dir)/"market_observations").glob("*.db"))
     files += [p for p in (Path(data_dir)/"market_observations.db", Path(data_dir)/"dhan_api_observations.db") if p.exists()]
-    events, seen = [], set()
+    events, seen, contracts = [], set(), {}
     begin = str(pd.Timestamp(start)-pd.Timedelta(days=7))[:10]
     for path in files:
         if cancel(): raise InterruptedError("Cancelled")
@@ -48,7 +48,14 @@ def captured_events(data_dir, start, end, cancel=lambda: False):
                     if identifier in seen or kind not in {"dhan_api", "option_depth", "underlying", "feed_disconnected", "runtime_policy"}: continue
                     seen.add(identifier)
                     payload = raw if kind == "dhan_api" else json.loads(zlib.decompress(raw) if isinstance(raw, bytes) else raw)
-                    events.append({"id": identifier, "at": pd.Timestamp(stamp), "kind": kind, "generation": generation, "payload": payload})
+                    event={"id": identifier, "at": pd.Timestamp(stamp), "kind": kind, "generation": generation, "payload": payload}
+                    if compact_books and kind=="option_depth":
+                        # Millions of decoded books otherwise exhaust memory before replay starts.
+                        cid=payload.get("contract_id")
+                        if cid and payload.get("identity_verified"):
+                            event["contract"]=contracts.setdefault(cid,payload)
+                        event["payload"]=raw if isinstance(raw,bytes) else zlib.compress(raw.encode(),1)
+                    events.append(event)
             except sqlite3.OperationalError:
                 if cancel(): raise InterruptedError("Cancelled")
                 raise
@@ -101,7 +108,7 @@ class ReplayGateway:
         self.credential_generation = 0
         self.credential_provider = None
 
-    def contract_candles(self, contract, start, end):
+    def contract_candles(self, contract, start, end, *, cache_seconds=30):
         frame = self.frames.get(str(contract["security_id"]))
         if frame is None: raise ValueError("Recorded selected-contract candle response unavailable at this time")
         return frame.copy()
@@ -204,11 +211,11 @@ def normalized_chain(event, metadata, index_ids, previous):
 
 def run_replay(*, store, gateway, settings, data_dir, start, end, cancel=lambda: False, progress=None, candidate=None, symbols=("NIFTY", "SENSEX")):
     if progress: progress("Loading archived quote and API inputs", 0, 1)
-    events = captured_events(data_dir, start, start, cancel)
+    events = captured_events(data_dir, start, start, cancel, compact_books=True)
     if progress: progress("Preparing fixed contracts and recorded fee scenarios", 0, 1)
     metadata = {(r["metadata_observed_on"], str(r["security_id"])): r for r in store.list_records("contract_metadata", 100000)}
     index_ids = {str(e["payload"]["security_id"]): e["payload"]["symbol"] for e in events if e["kind"] == "underlying" and "security_id" in e["payload"]}
-    catalog = {e["payload"]["contract_id"]: e["payload"] for e in events if e["kind"] == "option_depth" and e["payload"].get("identity_verified")}
+    catalog = {e["contract"]["contract_id"]: e["contract"] for e in events if e.get("contract")}
     clock = {"now": pd.Timestamp(start+" 09:15", tz="Asia/Kolkata")}
     if candidate and pd.Timestamp(candidate["training_end"]) >= clock["now"]: raise ValueError("Challenger training overlaps the requested replay")
     replay_dir = Path(data_dir)/"autonomous_replays"/uuid.uuid4().hex
@@ -234,10 +241,10 @@ def run_replay(*, store, gateway, settings, data_dir, start, end, cancel=lambda:
             opening = day.tz_localize("Asia/Kolkata")+pd.Timedelta(hours=9, minutes=15)
             if session_state(opening) in {"WEEKEND", "HOLIDAY", "CALENDAR_UNSUPPORTED"}: continue
             if str(day.date()) != start:
-                events = captured_events(data_dir, str(day.date()), str(day.date()), cancel)
+                events = captured_events(data_dir, str(day.date()), str(day.date()), cancel, compact_books=True)
                 cursor = 0
                 index_ids.update({str(e["payload"]["security_id"]): e["payload"]["symbol"] for e in events if e["kind"] == "underlying" and "security_id" in e["payload"]})
-                new_catalog = {e["payload"]["contract_id"]: e["payload"] for e in events if e["kind"] == "option_depth" and e["payload"].get("identity_verified")}
+                new_catalog = {e["contract"]["contract_id"]: e["contract"] for e in events if e.get("contract")}
                 if set(new_catalog)-set(catalog):
                     fee_time_unknown |= costs.unknown_receipt_time
                     catalog.update(new_catalog)
@@ -261,7 +268,7 @@ def run_replay(*, store, gateway, settings, data_dir, start, end, cancel=lambda:
                 while cursor < len(events) and events[cursor]["at"] <= now:
                     event = events[cursor]; cursor += 1
                     payload = event["payload"]
-                    if event["kind"] == "dhan_api":
+                    if isinstance(payload,(bytes,str)):
                         payload = json.loads(zlib.decompress(payload) if isinstance(payload, bytes) else payload)
                         event = {**event, "payload": payload}
                     # REST rotations and WebSocket reconnects have independent
@@ -343,18 +350,18 @@ def run_replay(*, store, gateway, settings, data_dir, start, end, cancel=lambda:
                             "Fees use conservative same-day saved broker prequotes; recorded quotes do not prove live execution"],
             "learning_eligible": False, "deployment_ready": False, "opportunities": opportunities}
         report = report_from_run(result, {"from": start, "to": end, "capital": settings.paper_capital, "source": "observed", "strategy_mode": "autonomous", "monthly_target": settings.monthly_profit_target})
-        report.update(policy_version=VERSION, requested_start=start, requested_end=end, source=result["source"],
+        report.update(policy_version=VERSION, sizing_policy_version=SIZING_VERSION, requested_start=start, requested_end=end, source=result["source"],
             coverage_summary={"full_sessions": full_sessions}, unresolved_positions=unresolved,
             daily_pnl={r["date"]: r["pnl"] for r in daily}, net_pnl=sum(t["pnl"] for t in trades),
             estimated_charges=sum(t["costs"] for t in trades), max_drawdown=result["metrics"]["max_drawdown"],
             replay_storage=str(replay_dir), admission_blockers=dict(blockers), decision_blockers=decision_blockers,
             data_blocked_candidates=len(data_waits), unresolved_data_blocked_candidates=len(data_waits-selected),
             input_digest=input_digest.hexdigest(),
-            policy_settings_digest=hashlib.sha256(json.dumps({k: v for k, v in settings.model_dump().items()
+            policy_settings_digest=hashlib.sha256(json.dumps({"sizing_policy_version":SIZING_VERSION, **{k: v for k, v in settings.model_dump().items()
                 if k.startswith(("max_", "min_net_")) or k in {"paper_capital", "cash_reserve_rupees", "daily_loss_limit_rupees",
                    "hard_daily_halt_rupees", "planned_daily_loss_rupees", "emergency_execution_reserve_rupees", "session_start",
                    "entry_cutoff", "session_exit", "underlying_quote_age_seconds", "exit_cooldown_minutes",
-                   "weekly_loss_pause_rupees", "drawdown_pause_rupees"}}, sort_keys=True).encode()).hexdigest())
+                   "weekly_loss_pause_rupees", "drawdown_pause_rupees"}}}, sort_keys=True).encode()).hexdigest())
         (replay_dir/"report.json").write_text(json.dumps(json_safe(report), indent=2, allow_nan=False), encoding="utf-8")
         return report
     finally: isolated.close()

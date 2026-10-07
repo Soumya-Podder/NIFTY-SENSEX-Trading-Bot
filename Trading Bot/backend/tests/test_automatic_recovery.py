@@ -137,6 +137,97 @@ def test_partial_feed_outage_reconnects_while_other_packets_arrive(tmp_path,monk
     assert not feed.reconnect_if_idle()
 
 
+def test_websocket_throttle_backoff_blocks_snapshot_and_idle_retries(monkeypatch):
+    from app.market_data import DhanMarketData
+    clock={'value':100.}; starts=[]
+    monkeypatch.setattr('app.market_data.time.monotonic',lambda:clock['value'])
+    monkeypatch.setattr('app.market_data.session_state',lambda:'ENTRY_WINDOW')
+    class Thread:
+        def __init__(self,**kwargs): pass
+        def is_alive(self): return False
+        def start(self): starts.append(clock['value'])
+    monkeypatch.setattr('app.market_data.threading.Thread',Thread)
+    feed=DhanMarketData('test','test-token','NIFTY')
+    feed.last_attempt=100.
+    error=RuntimeError('secret URL must not appear')
+    error.response=SimpleNamespace(status_code=429,headers={'Retry-After':'180'})
+    feed._on_error(None,error)
+    assert feed.connection_http_status==429 and feed.reconnect_after==280.
+    assert '429' in feed.error and 'secret' not in feed.error
+    feed._on_error(None,error)  # SDK and adapter can report the same failed attempt.
+    assert feed.reconnect_failures==1
+    assert feed.snapshot()['reconnect_in_seconds']==180.
+    assert not feed.reconnect_if_idle() and not starts
+    clock['value']=279.
+    feed.start()
+    assert not starts
+    clock['value']=280.
+    assert feed.reconnect_if_idle() and starts==[280.]
+    assert feed.reconnect_failures==1  # Forced reconnect must preserve the backoff history.
+    error.response.headers={}
+    feed._on_error(None,error)
+    assert feed.reconnect_failures==2 and feed.reconnect_after==400.
+    feed._on_connect(None)
+    assert feed.connected and feed.error is None and feed.reconnect_after==0
+    assert feed.reconnect_failures==0 and feed.connection_http_status is None
+
+
+def test_replacement_token_clears_old_feed_error_and_backoff(monkeypatch):
+    from app.market_data import DhanMarketData
+    feed=DhanMarketData('test','old-token','NIFTY')
+    feed.error='Old authentication failure'; feed.connection_http_status=401
+    feed.reconnect_after=999999.; feed.reconnect_failures=4
+    starts=[]
+    monkeypatch.setattr(feed,'start',lambda:starts.append(1))
+    assert feed.refresh_credentials('test','replacement-token')
+    assert starts==[1] and feed.error is None and feed.connection_http_status is None
+    assert feed.reconnect_after==0 and feed.reconnect_failures==0
+
+
+@pytest.mark.parametrize('stage',['handshake','established'])
+def test_failed_feed_stops_sdk_retry_loop_and_closes_socket(monkeypatch,stage):
+    import sys
+    from app.market_data import DhanMarketData
+    closed=[]
+    error=RuntimeError('secret token in failed connection URL')
+    error.response=SimpleNamespace(status_code=429,headers={})
+    class SDKFeed:
+        def __init__(self,*args,**callbacks): self.callbacks=callbacks; self._running=False
+        def run(self):
+            self._running=True
+            if stage=='established': self.callbacks['on_connect'](self)
+            self.callbacks['on_error'](self,error)
+            assert not self._running
+            if stage=='handshake': raise error
+        def close_connection(self): closed.append(1)
+    client=SimpleNamespace(dhan_http=SimpleNamespace())
+    monkeypatch.setitem(sys.modules,'dhanhq',SimpleNamespace(DhanContext=lambda *args:None,
+        MarketFeed=SDKFeed,dhanhq=lambda context:client))
+    monkeypatch.setattr('app.market_data.time.monotonic',lambda:100.)
+    feed=DhanMarketData('test','test-token','NIFTY',gateway=SimpleNamespace(master=lambda:object()))
+    feed.last_attempt=100.
+    monkeypatch.setattr(feed,'_resolve_instruments',lambda *args:[(0,'13',15)])
+    monkeypatch.setattr(feed,'_load_initial_snapshot',lambda client:None)
+    feed._run()
+    assert closed==[1] and not feed.connected
+    assert feed.reconnect_failures==1 and feed.reconnect_after==160.
+    assert feed.connection_http_status==429 and 'secret' not in feed.error
+
+
+@pytest.mark.parametrize('status',[401,403,503,None])
+def test_feed_error_reports_status_safely_and_retries_without_valid_retry_header(monkeypatch,status):
+    from app.market_data import DhanMarketData
+    monkeypatch.setattr('app.market_data.time.monotonic',lambda:100.)
+    feed=DhanMarketData('test','test-token','NIFTY'); feed.last_attempt=100.
+    error=RuntimeError('secret URL')
+    error.response=SimpleNamespace(status_code=status,headers={'Retry-After':'invalid'})
+    feed._on_error(None,error)
+    assert feed.reconnect_after==115. and 'secret' not in feed.error
+    assert feed.connection_http_status==status
+    if status in {401,403}: assert 'access rejected' in feed.error
+    else: assert 'credentials' not in feed.error
+
+
 def test_recorder_worker_recovers_without_removing_a_readiness_gate(tmp_path,monkeypatch):
     broker,store,clock=plan_account(tmp_path)
     starts=[]
@@ -220,6 +311,24 @@ def test_renewal_saves_only_token_and_runtime_reloads_rest_and_feed(tmp_path,mon
     assert len(calls)==2
 
 
+def test_rejected_token_is_actionable_without_exposing_response_secrets(tmp_path,monkeypatch):
+    from app.credential_recovery import renew_project_token
+    from app.runtime_health import execution_health
+    broker,store,clock=plan_account(tmp_path)
+    path=tmp_path/'.env'; original='DHAN_CLIENT_ID=test\nDHAN_ACCESS_TOKEN='+token(clock['now'],5)+'\n'
+    path.write_text(original)
+    monkeypatch.setattr('app.credential_recovery.requests.get',lambda *a,**k:SimpleNamespace(
+        status_code=400,json=lambda:{'errorCode':'DH-906','errorMessage':'Invalid Token: response-secret'}))
+    result=renew_project_token(clock['now'],path=path)
+    assert result['requires_user_action'] and result['error_code']=='DH-906'
+    assert 'project .env' in result['reason'] and 'response-secret' not in str(result)
+    assert path.read_text()==original
+    engine=SimpleNamespace(status={'last_cycle':clock['now'].isoformat(),'credential_renewal':result},
+        threads=[SimpleNamespace(name='paper-engine',is_alive=lambda:True)])
+    health=execution_health(engine,broker,clock['now'])
+    assert health['operational'] and health['advisory_errors']['credential_renewal']==result
+
+
 @pytest.mark.parametrize('kind',['expired','malformed','failure','replacement'])
 def test_renewal_never_fabricates_or_overwrites_user_credentials(tmp_path,monkeypatch,kind):
     from app.credential_recovery import renew_project_token
@@ -278,3 +387,152 @@ def test_slow_history_http_does_not_hold_up_other_candle_requests(tmp_path):
         release.set(); first.join(3)
         if second.ident is not None: second.join(3)
     assert failures==[]
+
+
+def test_automatic_recovery_isolates_failed_repairs_and_verifies_other_components(tmp_path,monkeypatch):
+    broker,store,clock=plan_account(tmp_path)
+    calls=[]
+    def failed_recorder(): raise RuntimeError('URL containing secret-token')
+    recorder=SimpleNamespace(status=lambda:{'worker_alive':False,'error':None},start=failed_recorder)
+    market=SimpleNamespace(recorder=recorder,connected=False,error=None)
+    def reconnect():
+        calls.append('feed'); market.connected=True
+        return True
+    market.reconnect_if_idle=reconnect
+    engine=PaperEngine(Settings(_env_file=None),store,None,broker,market,clock=lambda:clock['now'])
+    engine._recover_once()
+    assert calls==['feed']
+    components=engine.status['recovery']['components']
+    assert components['quote_recorder']['state']=='RETRYING'
+    assert components['market_feed']['state']=='RECOVERED'
+    assert 'secret-token' not in str(engine.status['recovery'])
+    assert engine.status['recovery']['state']=='DEGRADED'
+
+
+def test_recovery_backoff_journal_and_restart_keep_actual_failures_visible(tmp_path,monkeypatch):
+    broker,store,clock=plan_account(tmp_path)
+    timer={'value':100.}; starts=[]; alive={'value':False}
+    monkeypatch.setattr('app.paper_engine.time.monotonic',lambda:timer['value'])
+    recorder=SimpleNamespace(status=lambda:{'worker_alive':alive['value'],'error':None},start=lambda:starts.append(1))
+    engine=PaperEngine(Settings(_env_file=None),store,None,broker,SimpleNamespace(recorder=recorder),clock=lambda:clock['now'])
+    engine._recover_once(); engine._recover_once()
+    assert starts==[1]
+    assert engine.status['recovery']['components']['quote_recorder']['state']=='RETRYING'
+    alive['value']=True; engine._recover_once()
+    assert engine.status['recovery']['components']['quote_recorder']['state']=='RECOVERED'
+    saved=store.get_record('paper_recovery','status')
+    assert saved['history'][-1]['component']=='quote_recorder'
+    restarted=PaperEngine(Settings(_env_file=None),store,None,broker,clock=lambda:clock['now'])
+    assert restarted.status['recovery']['history']==saved['history']
+    assert restarted.status['recovery']['state']=='STARTING'  # Old recovery is history, not current proof.
+
+
+def test_persistence_repair_rewrites_only_the_durable_account(tmp_path,monkeypatch):
+    broker,store,clock=plan_account(tmp_path)
+    order=__import__('tests.test_paper',fromlist=['enter']).enter(broker,clock,qty=10)
+    committed=broker.snapshot()
+    original=store.save_bundle
+    monkeypatch.setattr(store,'save_bundle',lambda items:(_ for _ in ()).throw(OSError('temporary disk failure')))
+    with pytest.raises(OSError): broker.control(enabled=False)
+    assert broker.persistence_error and broker.snapshot()['enabled']==committed['enabled']
+    with pytest.raises(OSError): broker.recover_persistence()
+    monkeypatch.setattr(store,'save_bundle',original)
+    assert broker.recover_persistence()
+    restored=__import__('app.broker',fromlist=['PaperBroker']).PaperBroker(store,30000,broker.cost,clock=lambda:clock['now'],policy=broker.policy)
+    assert restored.snapshot()['positions'][0]['id']==order['id']
+    assert restored.snapshot()['loss_ledger']==committed['loss_ledger']
+    assert restored.snapshot()['cash']==committed['cash']
+    assert not store.list_records('trades')
+
+
+def test_exit_closed_by_other_worker_clears_stale_technical_errors(tmp_path,monkeypatch):
+    from tests.test_paper import enter,contract,quote
+    broker,store,clock=plan_account(tmp_path)
+    order=enter(broker,clock,qty=10)
+    engine=PaperEngine(Settings(_env_file=None),store,None,broker,clock=lambda:clock['now'])
+    engine.status.update(protection_error='Previous exit failure',exit_error='Previous exit failure')
+    clock['now']+=timedelta(seconds=1)
+    broker.close(order['id'],quote(contract(),clock,bid=95),'STOP',clock['now'])
+    engine.cycle()
+    assert not engine.status.get('protection_error') and not engine.status.get('exit_error')
+    assert broker.snapshot()['open_positions']==0 and not broker.snapshot()['halted']
+
+
+@pytest.mark.parametrize('namespace',['paper','paper_recovery'])
+def test_account_and_recovery_writes_do_not_wait_behind_a_slow_writer(tmp_path,namespace):
+    import sqlite3
+    from app.store import Store
+    store=Store(tmp_path/'bounded-writes.db')
+    locked=threading.Event(); release=threading.Event(); done=threading.Event(); errors=[]
+    def hold_lock():
+        with store._write_lock:
+            locked.set(); release.wait(3)
+    def write():
+        try:
+            store.save_bundle([(namespace,'account' if namespace=='paper' else 'status',{})],
+                **({'timeout':.25} if namespace=='paper_recovery' else {}))
+        except Exception as exc: errors.append(exc)
+        finally: done.set()
+    holder=threading.Thread(target=hold_lock); writer=threading.Thread(target=write)
+    holder.start()
+    try:
+        assert locked.wait(1)
+        writer.start()
+        assert done.wait(1),'Account/recovery write waited behind an unrelated slow write'
+        assert len(errors)==1 and isinstance(errors[0],sqlite3.OperationalError)
+    finally:
+        release.set(); holder.join(3)
+        if writer.ident is not None: writer.join(3)
+
+
+def test_unchanged_failed_repair_does_not_flood_durable_history(tmp_path,monkeypatch):
+    broker,store,clock=plan_account(tmp_path)
+    monkeypatch.setattr('app.paper_engine.time.monotonic',lambda:100.)
+    def failed(): raise OSError('secret-token')
+    recorder=SimpleNamespace(status=lambda:{'worker_alive':False},start=failed)
+    engine=PaperEngine(Settings(_env_file=None),store,None,broker,SimpleNamespace(recorder=recorder),clock=lambda:clock['now'])
+    engine._recover_once()
+    history=engine.status['recovery']['history'].copy()
+    writes=[]
+    monkeypatch.setattr(store,'save_bundle',lambda *args,**kwargs:writes.append(1))
+    engine._recover_once()
+    assert engine.status['recovery']['history']==history and not writes
+
+
+@pytest.mark.parametrize('change,stalled',[
+    ({},True),
+    ({'runtime':{'heartbeat_age_seconds':5}},False),
+    ({'runtime':{'heartbeat_age_seconds':None}},False),
+    ({'broker':{'healthy':False,'mode':'paper'}},False),
+    ({'broker':{'healthy':True,'mode':'live'}},False),
+    ({'readiness':{'exit_status':'WAITING_FOR_DEPTH','positions':[{'pending':True}]}},False),
+    ({'readiness':{'exit_status':'NO_POSITION'}},False),
+    ({'app':'unavailable'},False),
+])
+def test_supervisor_restarts_stalled_execution_only_with_verified_flat_paper_account(change,stalled):
+    from paper_service import execution_stalled
+    health={'app':'healthy','runtime':{'heartbeat_age_seconds':65},
+        'broker':{'healthy':True,'mode':'paper'},'readiness':{'exit_status':'NO_POSITION','positions':[]}}
+    assert execution_stalled({**health,**change}) is stalled
+
+
+def test_missing_market_data_does_not_trigger_process_restart():
+    from paper_service import execution_stalled
+    health={'app':'healthy','runtime':{'heartbeat_age_seconds':2,'healthy':False},
+        'broker':{'healthy':True,'mode':'paper'},'market_data':{'connected':False},
+        'readiness':{'exit_status':'NO_POSITION','positions':[],
+            'entry_blockers':['FEED_DISCONNECTED','NO_INDEX_HAS_ENTRY_DATA']}}
+    assert not execution_stalled(health)
+
+
+def test_alive_worker_does_not_prove_a_stale_execution_loop_recovered(tmp_path):
+    broker,store,clock=plan_account(tmp_path)
+    engine=PaperEngine(Settings(_env_file=None),store,None,broker,clock=lambda:clock['now'])
+    engine.threads=[SimpleNamespace(name='paper-engine',is_alive=lambda:True)]
+    engine.status['last_cycle']=(clock['now']-timedelta(seconds=65)).isoformat()
+    engine._recover_once()
+    assert engine.status['recovery']['components']['execution_loop']['state']=='RETRYING'
+    assert engine.status['recovery']['state']=='DEGRADED'
+    engine.status['last_cycle']=clock['now'].isoformat()
+    engine._recover_once()
+    assert engine.status['recovery']['components']['execution_loop']['state']=='RECOVERED'

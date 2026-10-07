@@ -37,8 +37,8 @@ These are current project requirements and paper-policy values, superseding olde
 | Paper capital | ₹30,000 combined | Not ₹30,000 per index |
 | Daily profit aspiration | ₹1,000+ net | Reporting objective; never forces entry |
 | Monthly profit aspiration | ₹18,000 net | Latest user objective; does not increase size, frequency or holding time |
-| Planned risk per trade | ₹650 maximum | Stop distance, spread and estimated charges |
-| Correlated open risk | ₹650 maximum | Shared account limit |
+| Planned risk per lot | ₹650 maximum per lot | Stop distance, spread and estimated charges; position capped by remaining daily allocation |
+| Correlated open risk | ₹650 × whole lots | Shared account; capped by remaining daily allocation |
 | Planned daily loss allocation | ₹1,000 | Non-replenishing ledger; winners do not restore it |
 | Execution reserve | ₹200 | Reserved for execution uncertainty |
 | Daily loss / hard halt | ₹1,200 | Blocks entries and requests liquidation |
@@ -186,15 +186,15 @@ This is a logical dependency order; evidence can be prepared asynchronously. App
 - Preferred Delta/liquidity within nearest eligible expiry; cheap premium alone is not a rule.
 - Planned net reward/risk floor 1.0 after charges; nominal target 2R before costs. Strict net-2R is a separate comparison, not manufactured by extending a target.
 
-Autonomous protection requires the exact selected contract's completed signal/retest-minute candle and at least fourteen causal contract bars for option ATR. The stop respects that candle's low and a minimum observed option-ATR distance; it is not a hardcoded percentage. Live day-low metadata cannot overwrite this candle. Never tighten a stop to fit ₹650. Reject if one lot cannot fit.
+Autonomous protection requires the exact selected contract's completed signal/retest-minute candle and at least fourteen causal contract bars for option ATR. The stop respects that candle's low and a minimum observed option-ATR distance; it is not a hardcoded percentage. Live day-low metadata cannot overwrite this candle. Never tighten a stop to fit the risk allowance. Reject any quantity exceeding its ₹650-per-lot ceiling or the remaining daily allocation.
 
 Before entry, the nominal 2R premium target must have room before the nearest already-confirmed higher-timeframe obstacle. The observed Delta maps premium distance to an approximate index move; this is explicitly a local sensitivity approximation. A range midpoint must also offer enough room. The target is never extended or the stop reduced merely to pass the gate.
 
-### Sizing: risk-sized-whole-lots-v2
+### Sizing: risk-sized-whole-lots-v3-per-lot
 
 ```text
 cash allowance = min(₹30,000, premium limit, cash − cash reserve)
-risk allowance = min(trade/correlated cap, remaining daily allocation)
+risk allowance = min(per-lot trade/correlated cap × whole lots, remaining daily allocation)
 unit risk = ask − structural stop + max(0, ask − bid)
 entry debit = quantity × ask + estimated entry charges
 planned risk = quantity × unit risk + round-trip stop charges
@@ -202,6 +202,8 @@ quantity ≤ observed bid quantity and ask quantity
 ```
 
 Choose the largest whole-lot quantity passing recorded broker fee estimates and both allowances. Autonomous runtime and archived-input replay use the same sizing helper and paper broker. Broker rechecks account, full quantity/depth, contract, quote, fees and review atomically. Charge HTTP requests occur outside the account lock; after their completion, admission rechecks current quotes and risk. Multi-lot permission does not remove the one-position limit.
+
+The ₹650 allowance applies per lot. Two lots have a ₹1,300 ceiling, but the unchanged ₹1,000 planned daily loss allocation caps their actual admissible risk at ₹1,000 before any loss spend. A two-lot position with ₹840 all-in planned risk is eligible on sizing; one with ₹1,100 is rejected. Winners do not refill spent daily allocation. Outcomes from the earlier whole-position cap have a different sizing version and are not pooled as evidence for the current policy.
 
 Autonomous paper filters require the current policy and feature schema, replay the actual sizing rules, and compare identical archived-input and risk/execution-setting digests. The separate legacy verified ML path has its own scope/governance limits and is not activated in autonomous mode.
 
@@ -246,7 +248,7 @@ Before a close attempt, persist `exit_request` on the position and in `exit_requ
 
 Fresh bid quantity can support partial whole-lot liquidation. Reusing a consumed quote cannot fill again. Remaining exposure stays visible. PENDING/PARTIAL/COMPLETED changes persist together with fills/account state.
 
-Failure retains the request and halts entries. Restart reconstructs positions and resumes the request. Resolution does not silently remove the failure halt; review/resume is separate. Partial exits reduce remaining price/spread risk but retain original charge reserve. Legacy positions without metadata retain conservative reservations.
+Failure retains the request and halts entries. Restart reconstructs positions and resumes the request. Only an exit-pending technical halt may clear automatically after the position is durably flat with no loss-ledger lock. Manual and risk halts remain in place. A stale exit/protection worker error clears only after the account is flat and persistence is healthy. Partial exits reduce remaining price/spread risk but retain original charge reserve. Legacy positions without metadata retain conservative reservations.
 
 ### P&L
 
@@ -440,8 +442,15 @@ Daily checkpoints prevent ordinary restart re-enqueueing; late startup skips obs
 - Exit: NO_POSITION / EXECUTABLE / WAITING_FOR_DEPTH, with held-contract freshness, minimum lot depth, full-quantity coverage and saved requests. EXECUTABLE is not a completed fill or full fee check.
 - Paused entries never disable protective exit management. Failed persistence restores committed state and blocks admission. Reconnect/rotation invalidate stale observations.
 - Advisory/learning/UI failure cannot grant trading authority.
+- Expected protection-data gaps have `WAITING_DATA` reviews; insufficient structural target room has a `BLOCKED` review. These no longer throw through the selector as code errors. Unexpected exceptions retain `ERROR` evidence and cannot create an offer.
 
-System & risk details exposes these blockers; positions show exit requests. Historical counts, current liveness and current data freshness remain separate.
+The existing feed-watch worker runs component-specific recovery checks roughly every two seconds. It reloads authoritative credentials independently of the main execution cycle, restarts stopped workers without duplicating running workers, restarts stopped quote/notification recorders, retries the committed account write and reconnects the feed through provider backoff. One repair exception does not prevent later component repairs. Candle and chain workers retain their existing refetch loops; the monitor verifies current completed candles and observed chain context during the market session. A retry is not proof of recovery, and unknown persistent code errors remain blocked until repaired.
+
+`engine.recovery` and Agentic view's Automatic recovery panel show current checks, failure category, attempted action and attempt count. Dashboard System & risk details also shows the current recovery state and last check. The latest fifty state/attempt events persist in the existing database under `paper_recovery/status`. Restart restores history but begins current checks at `STARTING`. Unchanged failures during backoff do not flood history. Recovery journal failures are advisory; the account persistence gate remains mandatory. Account and recovery writes have bounded Python-lock and SQLite waits, so a slow research write cannot indefinitely hold the exit worker.
+
+The existing single-instance supervisor also checks the execution heartbeat. Three consecutive responsive health probes showing a heartbeat older than sixty seconds may restart only its owned API process, with healthy paper storage and no reported position or pending exit. Restarts are limited to three per hour and at least five minutes apart. Missing market data, an unresponsive/unowned API or an open position does not satisfy that restart check. Provider denial, missing historical evidence and permanent storage failures require their actual prerequisites to recover; none permits invented quotes or an entry override.
+
+System & risk details exposes readiness blockers; positions show exit requests. Historical counts, current liveness, repair attempts and current data freshness remain separate. These mechanisms repair tested runtime failures, not arbitrary source code or trading losses. Complete market-session operation and profitable forward performance remain separate acceptance criteria.
 
 ## 15. Storage and API map
 
@@ -613,7 +622,7 @@ Paths below are relative to `Trading Bot/` unless noted. Companion documents can
 | Audit/research/forward | `backend/app/learning_monitor.py`, `backend/app/individual_agent_audit.py`, `backend/app/autonomous_agent.py`, `backend/app/forward_comparison.py` |
 | Reporting | `backend/app/telegram.py`, `backend/app/paper_performance.py` |
 | UI | `frontend/src/main.tsx`, `frontend/src/TradingWorkspace.tsx`, `frontend/src/AutonomyStatus.tsx`, related view helpers |
-| Autonomous/recovery tests | `backend/tests/test_autonomous_paper.py`, `backend/tests/test_autonomous_replay.py`, `backend/tests/test_broker_fee_receipts.py`, `backend/tests/test_operational_recovery.py` |
+| Autonomous/recovery tests | `backend/tests/test_autonomous_paper.py`, `backend/tests/test_autonomous_replay.py`, `backend/tests/test_broker_fee_receipts.py`, `backend/tests/test_operational_recovery.py`, `backend/tests/test_automatic_recovery.py` |
 | Launch/service | `backend/paper_service.py`, `run_backend.bat`, `run_frontend.bat` |
 | Knowledge graph | Project-root `graphify-out/` |
 

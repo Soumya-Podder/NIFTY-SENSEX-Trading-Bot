@@ -161,18 +161,23 @@ class Store:
     def put_record(self, namespace, key, payload):
         self.save_bundle([(namespace,str(key),payload)])
 
-    def save_bundle(self, items):
+    def save_bundle(self, items, *, timeout=None):
         stamp=datetime.now(timezone.utc).isoformat()
         items=list(items)
         account_write=any((namespace=="paper" or namespace.endswith("/paper")) and key=="account" for namespace,key,_ in items)
-        attempts=1 if account_write else 3
+        wait=.25 if account_write else timeout
+        attempts=1 if wait is not None else 3
         for attempt in range(attempts):
             try:
-                with self._write_lock, self._conn(timeout=.25 if account_write else 30) as c:
-                    c.execute("BEGIN IMMEDIATE")
-                    for namespace,key,payload in items:
-                        c.execute("INSERT INTO records VALUES(?,?,?,?) ON CONFLICT(namespace,key) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at",
-                                  (namespace,str(key),json.dumps(json_safe(payload),allow_nan=False),stamp))
+                acquired=self._write_lock.acquire() if wait is None else self._write_lock.acquire(timeout=wait)
+                if not acquired: raise sqlite3.OperationalError("Store write lock busy")
+                try:
+                    with self._conn(timeout=30 if wait is None else wait) as c:
+                        c.execute("BEGIN IMMEDIATE")
+                        for namespace,key,payload in items:
+                            c.execute("INSERT INTO records VALUES(?,?,?,?) ON CONFLICT(namespace,key) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at",
+                                      (namespace,str(key),json.dumps(json_safe(payload),allow_nan=False),stamp))
+                finally: self._write_lock.release()
                 return
             except sqlite3.OperationalError as e:
                 if "locked" in str(e).lower() and attempt < attempts-1:

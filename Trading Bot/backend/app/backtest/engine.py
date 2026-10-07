@@ -170,7 +170,7 @@ class BacktestEngine:
                 same_risk=sum(p["risk_rupees"] for p in positions.values() if p["option_type"]==signal["option_type"])
                 equity=cash+sum(p["mark"]*p["qty"] for p in positions.values())
                 budget=available_risk(cfg.risk_per_trade,cfg.daily_loss_limit,equity-baseline,open_risk,cfg.correlated_risk_limit,same_risk)
-                if policy: budget=min(policy.trade_risk,policy.remaining(ledger,open_risk))
+                if policy: budget=policy.risk_budget(ledger,1,open_risk)
                 max_lots=max(0,min(int(cash//(price*lot)),int(max(budget,0)//(price*signal["stop_percent"]*lot))))
                 if policy: max_lots=min(1,max_lots)
                 filled=None
@@ -330,7 +330,7 @@ class BacktestEngine:
                         if price*lot+buy["total"]<=cash and (price-exit_price)*lot+buy["total"]+sell["total"]<=cfg.risk_per_trade:
                             if cfg.strategy_mode:
                                 risk=(price-exit_price)*lot+buy["total"]+sell["total"]
-                                if risk>min(policy.trade_risk,policy.remaining(ledger)):
+                                if risk>policy.risk_budget(ledger,1):
                                     continue
                                 if price*lot+buy["total"]>min(policy.premium_limit,cash-policy.cash_reserve):
                                     continue

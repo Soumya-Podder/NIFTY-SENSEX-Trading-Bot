@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     # .env remains authoritative at runtime, but these values must not fall back
     # to the superseded limits when a worker/test loads settings without an env
     # file or after a clean checkout.
-    max_trade_risk_rupees: float = Field(default=650,gt=0,allow_inf_nan=False)
+    max_trade_risk_rupees: float = Field(default=650,gt=0,allow_inf_nan=False)  # Per lot; daily allocation still caps the position.
     daily_loss_limit_rupees: float = Field(default=1200,gt=0,allow_inf_nan=False)
     hard_daily_halt_rupees: float = Field(default=1200,gt=0,allow_inf_nan=False)
     max_open_positions: int = Field(default=1,ge=1,le=2)

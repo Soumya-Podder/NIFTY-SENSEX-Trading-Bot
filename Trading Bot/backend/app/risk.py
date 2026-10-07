@@ -4,13 +4,13 @@ from dataclasses import dataclass,asdict
 from datetime import timedelta
 from .session import local_time
 
-SIZING_VERSION="risk-sized-whole-lots-v2"
+SIZING_VERSION="risk-sized-whole-lots-v3-per-lot"
 
 
 @dataclass(frozen=True)
 class PlanRiskPolicy:
     """Plan v1 risk envelope. Values are frozen configuration, not learned parameters."""
-    trade_risk: float=600
+    trade_risk: float=650  # All-in planned risk allowance per lot.
     loss_allocation: float=1000
     emergency_reserve: float=200
     premium_limit: float=24000
@@ -39,6 +39,9 @@ class PlanRiskPolicy:
     def remaining(self,ledger,open_risk=0,pending_risk=0):
         return max(0,self.loss_allocation-ledger["loss_spend"]-open_risk-pending_risk)
 
+    def risk_budget(self,ledger,lots,open_risk=0,pending_risk=0):
+        return min(self.trade_risk*lots,self.remaining(ledger,open_risk,pending_risk))
+
     def entry_veto(self,ledger,now):
         if ledger.get("lock_reason"): return ledger["lock_reason"]
         if ledger["entries"]>=self.max_entries: return "MAX_ENTRY_ATTEMPTS"
@@ -47,7 +50,7 @@ class PlanRiskPolicy:
         if ledger.get("last_exit") and local_time(now)<local_time(ledger["last_exit"])+timedelta(minutes=self.cooldown_minutes): return "EXIT_COOLDOWN"
         return None
 
-    def describe(self): return asdict(self)
+    def describe(self): return {**asdict(self),"trade_risk_basis":"per_lot"}
 
     def target_reached(self, gross_pnl, net_liquidation_pnl):
         if self.gross_target is None:
@@ -65,7 +68,7 @@ def size_plan_order(policy,account,contract,stop,cost):
     lot=int(contract["lot_size"]); entry=float(contract["ask"]); bid=float(contract["bid"])
     unit_risk=entry-stop+max(0,entry-bid)
     cash=min(account["initial_capital"],policy.premium_limit,account["cash"]-policy.cash_reserve)
-    budget=min(policy.trade_risk,policy.remaining(account["loss_ledger"],account["open_risk_rupees"]))
+    budget=policy.remaining(account["loss_ledger"],account["open_risk_rupees"])
     if account["positions"] or lot<=0 or not all(math.isfinite(v) for v in (entry,bid,stop,unit_risk,cash,budget)) or not 0<stop<entry:
         return None
     depth=min(contract.get("ask_qty",0),contract.get("bid_qty",0))
@@ -79,7 +82,8 @@ def size_plan_order(policy,account,contract,stop,cost):
             if str(exc)!="Fresh broker fee reserve required before final paper admission": raise
             continue  # Final admission may use only previously prepared quantities.
         if not all(math.isfinite(v) and v>=0 for v in (buy_cost,stop_cost)): return None
-        if entry*qty+buy_cost<=cash and unit_risk*qty+stop_cost<=budget:
+        allowed=policy.risk_budget(account["loss_ledger"],count,account["open_risk_rupees"])
+        if entry*qty+buy_cost<=cash and unit_risk*qty+stop_cost<=allowed:
             return {"quantity":qty,"lots":count,"buy_cost":buy_cost,"stop_cost":stop_cost}
     return None
 

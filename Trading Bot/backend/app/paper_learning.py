@@ -9,6 +9,7 @@ import pandas as pd
 
 from .ai import FEATURES, SCHEMA, MLTradeQualityModel, number
 from .autonomous_policy import VERSION, STRATEGY_SPECS
+from .risk import SIZING_VERSION
 from .session import local_time
 
 RESEARCH_VERSION = "autonomous-paper-learning-v1"
@@ -41,6 +42,7 @@ def entry_context(signal):
 def eligibility(trade):
     reasons = []
     if trade.get("portfolio_version") != VERSION: reasons.append("Different active paper policy")
+    if trade.get("sizing_policy_version") != SIZING_VERSION: reasons.append("Different active sizing policy")
     if trade.get("source") != "paper_live_quotes" or trade.get("partial") or trade.get("estimated_exit"):
         reasons.append("Completed observed paper episode required")
     if not trade.get("identity_verified") or not trade.get("metadata_source") or not str(trade.get("security_id", "")).isdigit():
@@ -104,12 +106,12 @@ class PaperResearchLearning:
         # New outcomes trigger a new attempt; repeated polling is not learning.
         recorded = self.store.list_records("episodes", 100000)
         completed_through = str(local_time(now).date()) if local_time(now).strftime("%H:%M") >= "15:35" else str(local_time(now).date()-timedelta(days=1))
-        fingerprint = hashlib.sha256(json.dumps([completed_through, sorted((t["id"], t.get("pnl")) for t in recorded)]).encode()).hexdigest()
+        fingerprint = hashlib.sha256(json.dumps([SIZING_VERSION, completed_through, sorted((t["id"], t.get("pnl")) for t in recorded)]).encode()).hexdigest()
         previous = self.store.get_record("paper_learning_state", VERSION, {})
         if previous.get("fingerprint") == fingerprint: return previous
         completed_rows = [t for t in rows if t["exit_ts"][:10] <= completed_through]
         days = sorted({t["entry_ts"][:10] for t in completed_rows})
-        result = {"version": RESEARCH_VERSION, "fingerprint": fingerprint, "checked_at": now.isoformat(),
+        result = {"version": RESEARCH_VERSION, "sizing_policy_version": SIZING_VERSION, "fingerprint": fingerprint, "checked_at": now.isoformat(),
                   "eligible_outcomes": len(rows), "independent_days": len(days), "rejections": rejected,
                   "minimum_train": MIN_TRAIN, "minimum_holdout": MIN_TEST, "minimum_days": MIN_DAYS,
                   "status": "INSUFFICIENT_EVIDENCE", "authority": "UNVALIDATED_PAPER_RESEARCH_ONLY"}
@@ -171,6 +173,7 @@ class PaperResearchLearning:
                 reasons.append("Independent holdout range changed")
             if report.get("coverage_summary", {}).get("full_sessions") is not True: reasons.append("Full market-session coverage required")
             if report.get("policy_version") != VERSION or len(report.get("trades", [])) < MIN_TEST: reasons.append("Active policy and at least 30 replay outcomes required")
+            if report.get("sizing_policy_version") != SIZING_VERSION: reasons.append("Replay must use the active sizing policy")
         paired = [float(challenger.get("daily_pnl", {}).get(day, 0))-float(baseline.get("daily_pnl", {}).get(day, 0))
                   for day in sorted(set(baseline.get("daily_pnl", {})) | set(challenger.get("daily_pnl", {})))]
         lower = mean(paired)-1.96*stdev(paired)/len(paired)**.5 if len(paired) >= 10 else float("-inf")
@@ -189,6 +192,7 @@ class PaperResearchLearning:
         artifact = candidate.get("artifact", {})
         n = len(COLUMNS)
         return (candidate.get("version") == RESEARCH_VERSION and candidate.get("policy_version") == VERSION
+                and candidate.get("sizing_policy_version") == SIZING_VERSION
                 and artifact.get("schema") == SCHEMA and artifact.get("features") == list(COLUMNS)
                 and artifact.get("algorithm") == "regularized_logistic_regression" and artifact.get("threshold") == .55
                 and artifact.get("label") == "completed_net_pnl_positive" and number(artifact.get("intercept")) is not None
@@ -197,7 +201,7 @@ class PaperResearchLearning:
                 and all(number(v) > 0 for v in artifact["scale"]))
 
     def freeze(self, now):
-        key = str(local_time(now).date())+":"+VERSION
+        key = str(local_time(now).date())+":"+VERSION+":"+SIZING_VERSION
         frozen = self.store.get_record("paper_learning_sessions", key)
         if frozen is None:
             approved = [c for c in self.store.list_records("paper_learning_candidates", 1000)

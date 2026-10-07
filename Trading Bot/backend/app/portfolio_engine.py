@@ -6,11 +6,12 @@ import copy
 import math
 import threading
 import time
+from contextlib import nullcontext
 import pandas as pd
 from .paper_engine import PaperEngine
 from .strategy_portfolio import STRATEGIES, PORTFOLIO_VERSION, evaluate_strategies, rank_opportunities, regime_strategy_policy, closed_session
-from .pipeline import plan_protection, execution_context
-from .expectancy import ExpectancyEngine
+from .pipeline import plan_protection, execution_context, CandidateRejected, CandidateDataUnavailable
+from .expectancy import ExpectancyEngine, CostModel
 from .session import now_ist, quote_is_fresh
 from .telemetry.decision_trace import event
 from .ai import LearningService, extract_features
@@ -43,6 +44,7 @@ class MultiStrategyPaperEngine(PaperEngine):
     def __init__(self,*args,**kwargs):
         super().__init__(*args,**kwargs)
         self.protection_requests={}; self.protection_results={}
+        self.fee_requests={}; self.fee_retry_after={}
         self.pending_signals={}
         self.candle_repair_after={}
         self.audit_keys={}; self.entry_wakeup=threading.Event()
@@ -83,6 +85,7 @@ class MultiStrategyPaperEngine(PaperEngine):
         self.status["ml_session"]=self.ml_frozen
         with self.lock:
             self.protection_requests.clear(); self.protection_results.clear(); self.pending_signals.clear()
+            self.fee_requests.clear(); self.fee_retry_after.clear()
 
     def start(self):
         if any(thread.is_alive() for thread in self.threads): return
@@ -276,15 +279,37 @@ class MultiStrategyPaperEngine(PaperEngine):
         with self.lock:
             if request["generation"]==getattr(self.gateway,"credential_generation",0): self.protection_results[key]=result
 
+    def _queue_fee(self,signal,contract,buy,sell,qty,window,transaction):
+        key=(signal["id"],contract["contract_id"],buy,sell,qty,window,transaction)
+        with self.lock:
+            if time.monotonic()>=self.fee_retry_after.get(key,0):
+                self.fee_requests[key]={"signal":dict(signal),"contract":dict(contract),"buy":buy,"sell":sell,
+                    "qty":qty,"window":window,"transaction":transaction,"generation":getattr(self.gateway,"credential_generation",0)}
+
+    def prepare_fee(self,key,request):
+        if (not self._signal_fresh(request["signal"],self._now()) or
+            request["generation"]!=getattr(self.gateway,"credential_generation",0)): return
+        try:
+            self.broker.cost._broker_quote(request["contract"],request["buy"],request["sell"],
+                request["qty"],request["window"],request["transaction"])
+            self.status["fee_preparation_error"]=None
+        except Exception as exc:
+            self.status["fee_preparation_error"]=self._safe_error(exc)
+            with self.lock: self.fee_retry_after[key]=time.monotonic()+10
+        self.entry_wakeup.set()
+
     def _preparation_loop(self):
         while not self.stop_event.is_set():
             with self.lock:
                 request=next(iter(self.protection_requests.items()),None)
                 if request: self.protection_requests.pop(request[0],None)
+                fee=next(iter(self.fee_requests.items()),None)
+                if fee: self.fee_requests.pop(fee[0],None)
             if request:
                 key,value=request
                 if self._signal_fresh(value["signal"],self._now()): self.prepare_protection(key,value)
-            else: self.stop_event.wait(.25)
+            if fee: self.prepare_fee(*fee)
+            if not request and not fee: self.stop_event.wait(.25)
 
     @staticmethod
     def _signal_fresh(signal,now):
@@ -373,8 +398,24 @@ class MultiStrategyPaperEngine(PaperEngine):
     def _prepare_offer(self,signal,contract,account,outcomes,now):
         review={"agents":waiting_agents("Earlier mandatory gate has not cleared"),"checks":{}}
         try:
-            offer,reason=self._assess_offer(signal,contract,account,outcomes,now,review)
+            cost=self.broker.cost
+            # The existing preparation worker performs fee HTTP. The selector
+            # ranks ready offers without waiting for other contracts' network calls.
+            defer=bool(self.threads) and isinstance(cost,CostModel) and cost.paper and not cost.cache_only.get()
+            context=cost.cached_only(on_missing=lambda *args:self._queue_fee(signal,*args)) if defer else nullcontext()
+            with context:
+                offer,reason=self._assess_offer(signal,contract,account,outcomes,now,review)
+        except CandidateRejected as exc:
+            reason=self._safe_error(exc)
+            review["checks"]["protection_plan"]={"status":"BLOCKED","reason":reason}
+            self._record_review(signal,contract,review,now,"WAIT",reason,
+                "WAITING_DATA" if isinstance(exc,CandidateDataUnavailable) else "BLOCKED")
+            return None,reason
         except Exception as exc:
+            if isinstance(exc,ValueError) and str(exc)=="Waiting for broker fee preparation":
+                review["checks"]["broker_fees"]={"status":"BLOCKED","reason":str(exc)}
+                self._record_review(signal,contract,review,now,"WAIT",str(exc),"WAITING_DATA")
+                return None,str(exc)
             self._record_review(signal,contract,review,now,"WAIT",self._safe_error(exc),"ERROR")
             raise
         self._record_review(signal,contract,review,now,signal["option_type"] if offer else "WAIT",
@@ -408,6 +449,14 @@ class MultiStrategyPaperEngine(PaperEngine):
         signal=current
         review["bar_at"]=signal["feature_row"].get("timestamp")
         generation=getattr(self.gateway,"credential_generation",0)
+        if self.market:
+            _,books=self._execution_snapshot(signal["symbol"])
+            latest=books.get(contract["contract_id"])
+            if latest:
+                if any(latest.get(k)!=contract.get(k) for k in ("contract_id","expiry","strike","lot_size","option_type")):
+                    return None,"Contract identity changed during candidate review"
+                contract={**contract,**latest}
+            now=self._now()
         screen=assess_option(contract,signal,now,max_spread=self.settings.max_spread_pct,
                              max_quote_age=self.settings.max_quote_age_seconds)
         if not check("option_screen",screen["status"]=="PASS","; ".join(screen["reasons"]),evidence=screen):
@@ -458,7 +507,7 @@ class MultiStrategyPaperEngine(PaperEngine):
                 if not isinstance(evidence,list): evidence=[evidence]
                 details.append(name+(" ("+", ".join(map(str,evidence))+")" if evidence else ""))
             return None,"Specialist veto: "+"; ".join(details)
-        budget=min(self.broker.policy.trade_risk,self.broker.policy.remaining(account["loss_ledger"],account["open_risk_rupees"]))
+        budget=self.broker.policy.risk_budget(account["loss_ledger"],qty//contract["lot_size"],account["open_risk_rupees"])
         if not sizing:
             review["agents"]["Risk Sentinel"].update(status="VETO",evidence=review["checks"]["quantity"])
             return None,"No whole lot fits current cash, liquidity and risk allocation"
@@ -570,10 +619,11 @@ class MultiStrategyPaperEngine(PaperEngine):
                 try: offer,reason=self._prepare_offer(signal,c,account,outcomes,now)
                 except Exception as exc: offer,reason=None,self._safe_error(exc)
                 if offer: signal_offers.append(offer)
-                elif reason: reasons.append({"contract_id":c["contract_id"],"reason":reason})
+                elif reason: reasons.append({"contract_id":c["contract_id"],"reason":reason,
+                    "phase":state["reviews"].get(signal["symbol"],{}).get("phase")})
             offers.extend(signal_offers)
             if not signal_offers:
-                self._gate(signal,"WAITING_DATA" if any("candle" in r["reason"].lower() for r in reasons) else "REJECTED",
+                self._gate(signal,"WAITING_DATA" if any(r.get("phase")=="WAITING_DATA" or "candle" in r["reason"].lower() or r["reason"]=="Waiting for broker fee preparation" for r in reasons) else "REJECTED",
                     reasons[0]["reason"] if reasons else "No eligible contract",contract_results=reasons)
         ranked=rank_opportunities(offers)
         state["offers"]=[self._offer_view(o) for o in ranked]

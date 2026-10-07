@@ -264,6 +264,7 @@ def llm_generate_hypotheses(request: LLMHypothesisRequest):
         analysis["failure_analysis"] = analysts["failure"].analyze(losing)
     analysis["strategy_params"] = {
         "max_trade_risk_rupees": settings.max_trade_risk_rupees,
+        "risk_limit_basis": "per_lot",
         "daily_loss_limit_rupees": settings.daily_loss_limit_rupees,
         "entry_cutoff": settings.entry_cutoff,
         "session_exit": settings.session_exit,
@@ -326,6 +327,7 @@ engine.entry_readiness=readiness
 def risk():
     account=paper.snapshot()
     return {"halted":account["halted"],"reason":account["halt_reason"],"max_trade_risk_rupees":settings.max_trade_risk_rupees,
+        "risk_limit_basis":"per_lot",
         "daily_loss_limit_rupees":settings.daily_loss_limit_rupees,"max_correlated_risk_rupees":settings.max_correlated_risk_rupees,
         "hard_daily_halt_rupees":settings.hard_daily_halt_rupees,"max_open_positions":settings.max_open_positions,
         "option_depth_max_age_seconds":settings.max_quote_age_seconds,

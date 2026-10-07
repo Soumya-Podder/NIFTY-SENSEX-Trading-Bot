@@ -65,7 +65,7 @@ def test_plan_loss_spend_does_not_refill_after_winner_or_restart(tmp_path):
 
 def test_plan_serializes_indices_and_enforces_risk_cooldown_and_expiry(tmp_path):
     broker,_,clock=plan_account(tmp_path)
-    with pytest.raises(ValueError,match="risk"): enter(broker,clock,qty=60)
+    with pytest.raises(ValueError,match="risk"): enter(broker,clock,qty=100)
     first=enter(broker,clock,qty=20)
     with pytest.raises(ValueError,match="one position"): enter(broker,clock,c=contract("SENSEX"),qty=10,identifier="second")
     clock["now"]+=timedelta(seconds=1)
@@ -134,6 +134,50 @@ def signal(identifier="signal"):
 def enter(broker,clock,c=None,qty=20,identifier="signal"):
     c=c or contract()
     return broker.place_order(contract=c,quote=quote(c,clock),quantity=qty,signal=signal(identifier),now=clock["now"])
+
+
+def test_per_lot_risk_allows_sizing_and_atomic_entry_above_650(tmp_path):
+    from app.risk import PlanRiskPolicy,size_plan_order
+    broker,store,clock=plan_account(tmp_path)
+    broker.policy=PlanRiskPolicy.from_settings(Settings(_env_file=None))
+    q=quote(contract(),clock)
+    sized=size_plan_order(broker.policy,broker.snapshot(),q,60,TestFees())
+    assert sized["lots"]==2 and sized["quantity"]==20
+    s={**signal(),"stop_price":60,"target_price":180,"risk_rupees":1}
+    order=broker.place_order(contract=contract(),quote=q,quantity=sized["quantity"],signal=s,now=clock["now"])
+    position=broker.snapshot()["positions"][0]
+    assert position["risk_rupees"]==840  # 820 premium/spread risk plus 20 charges
+    assert broker.snapshot()["remaining_loss_allocation"]==160
+    restored=PaperBroker(store,30000,TestFees(),clock=lambda:clock["now"],policy=broker.policy)
+    assert restored.snapshot()["positions"][0]["id"]==order["id"]
+    assert restored.snapshot()["remaining_loss_allocation"]==160
+
+
+def test_multilot_entry_still_enforces_daily_allocation_and_per_lot_cap(tmp_path):
+    from app.risk import PlanRiskPolicy
+    broker,_,clock=plan_account(tmp_path)
+    broker.policy=PlanRiskPolicy.from_settings(Settings(_env_file=None))
+    q=quote(contract(),clock)
+    with pytest.raises(ValueError,match="risk"):
+        broker.place_order(contract=contract(),quote=q,quantity=30,
+            signal={**signal(),"stop_price":60,"target_price":180,"risk_rupees":1},now=clock["now"])
+    with pytest.raises(ValueError,match="risk"):
+        broker.place_order(contract=contract(),quote=q,quantity=10,
+            signal={**signal(),"stop_price":36,"target_price":228,"risk_rupees":1},now=clock["now"])
+    assert broker.snapshot()["cash"]==30000 and not broker.snapshot()["positions"]
+
+
+def test_multilot_sizing_uses_remaining_daily_loss_without_recycling_it(tmp_path):
+    from app.risk import PlanRiskPolicy,size_plan_order
+    broker,_,clock=plan_account(tmp_path)
+    broker.policy=PlanRiskPolicy.from_settings(Settings(_env_file=None))
+    broker.state["loss_ledger"]["loss_spend"]=300
+    q=quote(contract(),clock)
+    sized=size_plan_order(broker.policy,broker.snapshot(),q,60,TestFees())
+    assert sized["lots"]==1 and sized["quantity"]==10
+    with pytest.raises(ValueError,match="risk"):
+        broker.place_order(contract=contract(),quote=q,quantity=20,
+            signal={**signal(),"stop_price":60,"target_price":180},now=clock["now"])
 
 
 def test_account_persists_and_partial_exits_reconcile(account):

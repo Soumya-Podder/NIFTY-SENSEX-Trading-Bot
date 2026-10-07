@@ -381,7 +381,7 @@ function App() {
 
      <div className="compact-risk-strip" aria-label="Paper risk limits">
       <span>Daily loss cap <strong>{money(data?.risk?.daily_loss_limit_rupees)}</strong></span>
-      <span>Risk / trade <strong>{money(data?.risk?.max_trade_risk_rupees)}</strong></span>
+      <span>Risk / lot <strong>{money(data?.risk?.max_trade_risk_rupees)}</strong></span>
       <span>Session <strong>{data?.risk?.session_start || "—"}–{data?.risk?.session_exit || "—"} IST</strong></span>
      </div>
 
@@ -591,9 +591,10 @@ function App() {
     <div className="disclosure-content">
      <p><strong>Entry readiness: {data?.readiness?.entry_ready ? "Ready for candidate evaluation" : "Blocked"}</strong> · {(data?.readiness?.entry_blockers || []).join(" · ")}</p>
      <p>Exit capability: {data?.readiness?.exit_status || "Unknown"}</p>
+     {data?.engine?.recovery && <p role="status">Automatic recovery: <strong>{data.engine.recovery.state}</strong> · Last check {data.engine.recovery.checked_at || "pending"}. Detailed checks and repair history are in Agentic view.</p>}
      {(data?.readiness?.positions || []).filter((p: Data) => p.pending).map((p: Data) => <p key={p.position_id}>Pending exit · {p.contract_id} · {p.pending.reason} · Requested {p.pending.first_requested_at} · {p.pending.remaining_quantity} remaining · {p.pending.attempts} attempts · {p.pending.last_error || p.pending.status}</p>)}
      <div className="compact-risk-strip">
-      <span>Correlated open-risk cap <strong>{money(data?.risk?.max_correlated_risk_rupees)}</strong></span>
+      <span>Correlated risk / lot <strong>{money(data?.risk?.max_correlated_risk_rupees)}</strong></span>
       <span>Remaining loss allocation <strong>{money(account.remaining_loss_allocation)}</strong></span>
       <span>Entry cutoff <strong>{data?.risk?.entry_cutoff || "—"} IST</strong></span>
      </div>

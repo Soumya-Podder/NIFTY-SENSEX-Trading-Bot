@@ -13,6 +13,7 @@ from app.portfolio_engine import MultiStrategyPaperEngine
 from app.paper_learning import PaperResearchLearning, eligibility, COLUMNS, RESEARCH_VERSION
 from app.ai import MLTradeQualityModel, SCHEMA
 from app.config import Settings
+from app.risk import SIZING_VERSION
 from tests.test_paper import plan_account, contract, quote, enter
 from tests.test_simple_paper import downtrend_frame
 
@@ -52,7 +53,7 @@ def test_autonomous_downtrend_enters_and_exits_without_any_dhan_order(tmp_path, 
     position = state["positions"][0]
     assert position["option_type"] == "PUT" and position["strategy_id"] == "trend_continuation"
     assert position["portfolio_version"] == VERSION and position["exit_policy"] == "adaptive_observed_v1"
-    assert position["risk_rupees"] <= 650 and position["qty"]*position["entry"] < 24000
+    assert position["risk_rupees"] <= min(650*position["qty"]//position["lot_size"],1000) and position["qty"]*position["entry"] < 24000
     assert position["qty"] % position["lot_size"] == 0
     assert position["entry_features"]["paper_policy_version"] == VERSION
     engine.portfolio_cycle()
@@ -68,6 +69,113 @@ def test_autonomous_downtrend_enters_and_exits_without_any_dhan_order(tmp_path, 
     learned = engine.learning.train(clock["now"])
     assert learned["status"] == "INSUFFICIENT_EVIDENCE" and learned["eligible_outcomes"] == 1
     assert len(store.list_records("paper_investigations")) == 1
+
+
+def test_tick_rounded_stop_still_has_two_r_target():
+    from app.pipeline import plan_protection
+    c = {**contract(), "tick_size": .05}
+    planned = plan_protection({"retest_timestamp":"2026-10-07T10:00:00+05:30"}, c, {**c, "low": 100.}, 100., min_stop=1.003)
+    assert planned["target_price"]-100 >= 2*(100-planned["stop_price"])-1e-8
+    assert planned["stop_price"] == 98.95
+
+
+@pytest.mark.parametrize('problem,phase',[
+    ('target_room','BLOCKED'),('atr','WAITING_DATA'),('structure','WAITING_DATA')])
+def test_expected_candidate_gates_are_not_reported_as_code_errors(tmp_path,monkeypatch,problem,phase):
+    engine,broker,store,clock,q,_=setup_engine(tmp_path,monkeypatch)
+    if problem=='target_room':
+        price=float(engine.frames['NIFTY'].close.iloc[-1])
+        engine.status['market_structure']['NIFTY']['zones']=[{'relation':'SUPPORT','timeframe':'15m',
+            'upper':price-1,'lower':price-2,'distance_points':1}]
+    elif problem=='structure': engine.status['market_structure']['NIFTY']['status']='DATA_UNAVAILABLE'
+    else: engine._request_protection=lambda s,c:({**c,'low':98.,'option_atr':None},None)
+    signals,_=engine.evaluate_market(engine.frames['NIFTY'],clock['now'],'NIFTY',engine.status['market_structure']['NIFTY'])
+    signal=next(s for s in signals if s['strategy_id']=='trend_continuation')
+    offer,reason=engine._prepare_offer(signal,q,broker.snapshot(),[],clock['now'])
+    assert offer is None and reason
+    review=store.list_records('decision_reviews')[0]
+    assert review['phase']==phase and review['decision']=='WAIT'
+    assert review['checks']['protection_plan']['status']=='BLOCKED'
+    assert not broker.snapshot()['positions']
+
+
+def test_unexpected_candidate_exception_remains_a_visible_code_error(tmp_path,monkeypatch):
+    engine,broker,store,clock,q,_=setup_engine(tmp_path,monkeypatch)
+    def broken(*args): raise RuntimeError('unexpected calculation failure')
+    monkeypatch.setattr(engine,'plan_candidate',broken)
+    signals,_=engine.evaluate_market(engine.frames['NIFTY'],clock['now'],'NIFTY',engine.status['market_structure']['NIFTY'])
+    signal=next(s for s in signals if s['strategy_id']=='trend_continuation')
+    with pytest.raises(RuntimeError,match='unexpected calculation failure'):
+        engine._prepare_offer(signal,q,broker.snapshot(),[],clock['now'])
+    assert store.list_records('decision_reviews')[0]['phase']=='ERROR'
+
+
+def test_review_reads_book_after_completed_signal_check(tmp_path, monkeypatch):
+    engine, broker, _, clock, q, under = setup_engine(tmp_path, monkeypatch)
+    signals, _ = engine.evaluate_market(engine.frames["NIFTY"], clock["now"], "NIFTY", engine.status["market_structure"]["NIFTY"])
+    signal = next(s for s in signals if s["strategy_id"]=="trend_continuation")
+    c = engine.pipeline.option_candidates(signal, [q], broker.snapshot()["cash"], clock["now"], buyer_screen=True)[0]
+    old = (clock["now"]-timedelta(seconds=3)).isoformat()
+    c.update(timestamp=old, quote_update_timestamp=old)
+    offer, reason = engine._prepare_offer(signal, c, broker.snapshot(), [], clock["now"])
+    assert offer is not None, reason
+    assert engine._execute_offer(offer)
+    assert broker.snapshot()["open_positions"] == 1
+
+
+def test_live_selector_defers_fee_http_to_existing_preparation_worker(tmp_path, monkeypatch):
+    from app.expectancy import CostModel
+    engine, broker, _, clock, q, _ = setup_engine(tmp_path, monkeypatch)
+    engine.threads = [SimpleNamespace(name="paper-engine", is_alive=lambda: True)]
+    engine.status["last_cycle"] = clock["now"].isoformat()
+    broker.cost = CostModel(paper=True)
+    calls = []
+    def request(*args, **kwargs):
+        calls.append(kwargs["json"])
+        data = kwargs["json"]["data"]
+        raw = {"EXCHANGE_TURNOVER": (data["buy_price"]+data["sell_price"])*data["qty"]*q["lot_size"],
+               "BROKERAGE": 20., "EXCHANGE_CHARGES": 0., "STT_CHARGES": 0., "SEBI_CHARGES": 0.,
+               "IPFT_CHARGES": 0., "STAMP_DUTY": 0., "GST_CHARGES": 0., "TOTAL_CHARGES_TAX": 20.}
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"data": [raw]})
+    monkeypatch.setattr("app.expectancy.requests.post", request)
+    for _ in range(8):
+        before = len(calls)
+        engine.portfolio_cycle()
+        assert len(calls) == before, "Selector performed blocking fee HTTP"
+        if broker.snapshot()["open_positions"]: break
+        assert engine.fee_requests
+        pending = list(engine.fee_requests.items())
+        engine.fee_requests.clear()
+        for key, value in pending: engine.prepare_fee(key, value)
+    assert calls and broker.snapshot()["open_positions"] == 1
+    position=broker.snapshot()["positions"][0]
+    assert position["risk_rupees"] <= min(650*position["qty"]//position["lot_size"],1000)
+
+
+@pytest.mark.parametrize("blocker", ["expired", "credentials_rotated"])
+def test_fee_worker_discards_obsolete_setup_requests(tmp_path, monkeypatch, blocker):
+    engine, broker, _, clock, q, _ = setup_engine(tmp_path, monkeypatch)
+    signals, _ = engine.evaluate_market(engine.frames["NIFTY"], clock["now"], "NIFTY", engine.status["market_structure"]["NIFTY"])
+    signal = next(s for s in signals if s["strategy_id"]=="trend_continuation")
+    engine._queue_fee(signal, q, q["ask"], 110., q["lot_size"], "SHORT_TRADE", "S")
+    key, request = next(iter(engine.fee_requests.items()))
+    if blocker=="expired": clock["now"] += timedelta(minutes=4)
+    else: engine.gateway.credential_generation += 1
+    monkeypatch.setattr(broker.cost, "_broker_quote", lambda *args: pytest.fail("Obsolete setup requested fees"), raising=False)
+    engine.prepare_fee(key, request)
+    assert broker.snapshot()["open_positions"] == 0
+
+
+def test_refresh_does_not_allow_a_stale_live_book(tmp_path, monkeypatch):
+    engine, broker, _, clock, q, _ = setup_engine(tmp_path, monkeypatch)
+    signals, _ = engine.evaluate_market(engine.frames["NIFTY"], clock["now"], "NIFTY", engine.status["market_structure"]["NIFTY"])
+    signal = next(s for s in signals if s["strategy_id"]=="trend_continuation")
+    c = engine.pipeline.option_candidates(signal, [q], broker.snapshot()["cash"], clock["now"], buyer_screen=True)[0]
+    old = (clock["now"]-timedelta(seconds=3)).isoformat()
+    q.update(timestamp=old, quote_update_timestamp=old)
+    offer, reason = engine._prepare_offer(signal, c, broker.snapshot(), [], clock["now"])
+    assert offer is None and "Fresh observed option depth required" in reason
+    assert broker.snapshot()["open_positions"] == 0
 
 
 def test_autonomous_continuation_uses_declared_greek_freshness_policy(tmp_path,monkeypatch):
@@ -108,7 +216,7 @@ def test_slow_fee_preparation_does_not_expire_final_paper_entry(tmp_path,monkeyp
     engine.portfolio_cycle()
     assert calls and broker.snapshot()['open_positions']==1
     position=broker.snapshot()['positions'][0]
-    assert position['risk_rupees']<=650 and position['entry_charges']['estimated']
+    assert position['risk_rupees']<=min(650*position['qty']//position['lot_size'],1000) and position['entry_charges']['estimated']
     before=len(calls)
     engine.portfolio_cycle()
     assert len(calls)==before and broker.snapshot()['open_positions']==1
@@ -267,15 +375,23 @@ def test_learning_freezes_next_session_and_rejects_noncausal_features(tmp_path, 
     broker.close(position["id"], q, "TARGET", clock["now"])
     episode = store.list_records("episodes")[0]
     assert not eligibility(episode)
+    legacy=deepcopy(episode)
+    legacy["sizing_policy_version"]="risk-sized-whole-lots-v2"
+    assert "Different active sizing policy" in eligibility(legacy)
     episode["entry_features"]["observed_at"] = (clock["now"]+timedelta(seconds=1)).isoformat()
     assert "Feature timestamps must precede entry and outcome" in eligibility(episode)
     learning = PaperResearchLearning(store)
     first = learning.freeze(clock["now"])
     artifact = MLTradeQualityModel.fit([{"values": {}}]*4, [0, 1, 0, 1], COLUMNS).artifact
-    candidate = {"id": "fixture-model", "version": RESEARCH_VERSION, "policy_version": VERSION, "artifact": artifact,
+    candidate = {"id": "fixture-model", "version": RESEARCH_VERSION, "policy_version": VERSION, "sizing_policy_version": SIZING_VERSION, "artifact": artifact,
                  "status": "PAPER_APPROVED_NEXT_SESSION", "paper_approved": True, "approved_at": clock["now"].isoformat(),
                  "effective_on": str(clock["now"].date()+timedelta(days=1))}
     store.put_record("paper_learning_candidates", candidate["id"], candidate)
+    legacy_model={**candidate,"id":"old-sizing-model","sizing_policy_version":"risk-sized-whole-lots-v2",
+                  "approved_at":(clock["now"]+timedelta(seconds=1)).isoformat()}
+    store.put_record("paper_learning_candidates",legacy_model["id"],legacy_model)
+    store.put_record("paper_learning_sessions",str((clock["now"]+timedelta(days=1)).date())+":"+VERSION,
+        {"models":{VERSION:legacy_model}})
     assert learning.freeze(clock["now"]) == first and not first["models"]
     assert learning.freeze(clock["now"]+timedelta(days=1))["models"][VERSION]["id"] == "fixture-model"
 
@@ -320,14 +436,14 @@ def test_used_holdout_cannot_be_repeated_as_new_learning(tmp_path):
     assert len(store.list_records("paper_learning_candidates")) == 1
 
 
-@pytest.mark.parametrize("defect", [None, "inputs", "risk", "incomplete", "training_overlap"])
+@pytest.mark.parametrize("defect", [None, "inputs", "risk", "sizing", "incomplete", "training_overlap"])
 def test_paper_approval_requires_comparable_independent_account_replays(tmp_path, defect):
     _, store, clock = plan_account(tmp_path)
     learner = PaperResearchLearning(store)
     artifact = MLTradeQualityModel.fit([{"values": {}}]*4, [0, 1, 0, 1], COLUMNS).artifact
-    candidate = {"id": "replay-fixture", "version": RESEARCH_VERSION, "policy_version": VERSION, "artifact": artifact,
+    candidate = {"id": "replay-fixture", "version": RESEARCH_VERSION, "policy_version": VERSION, "sizing_policy_version": SIZING_VERSION, "artifact": artifact,
                  "training_end": "2026-07-24T15:05:00+05:30", "validation_start": "2026-07-25", "validation_end": "2026-08-03"}
-    baseline = {"status": "research_complete", "source": "autonomous_observed_quote_replay", "policy_version": VERSION,
+    baseline = {"status": "research_complete", "source": "autonomous_observed_quote_replay", "policy_version": VERSION, "sizing_policy_version": SIZING_VERSION,
                 "requested_start": candidate["validation_start"], "requested_end": candidate["validation_end"],
                 "coverage_summary": {"full_sessions": True}, "input_digest": "same-archive", "policy_settings_digest": "same-risk",
                 "daily_pnl": {str(d.date()): 0 for d in pd.date_range("2026-07-25", "2026-08-03")},
@@ -335,6 +451,7 @@ def test_paper_approval_requires_comparable_independent_account_replays(tmp_path
     challenger = {**deepcopy(baseline), "daily_pnl": {d: 25 for d in baseline["daily_pnl"]}, "net_pnl": 250, "max_drawdown": -50}
     if defect == "inputs": challenger["input_digest"] = "different-archive"
     if defect == "risk": challenger["policy_settings_digest"] = "increased-risk"
+    if defect == "sizing": challenger["sizing_policy_version"] = "risk-sized-whole-lots-v2"
     if defect == "incomplete": challenger["issues"] = ["Missing quotes"]
     if defect == "training_overlap": candidate["training_end"] = "2026-07-26T10:05:00+05:30"
     validated = learner.validate_replay(candidate, baseline, challenger, clock["now"])
@@ -350,5 +467,6 @@ def test_empty_holiday_replay_does_not_touch_live_account_or_event_bus(tmp_path)
     report = run_replay(store=store, gateway=SimpleNamespace(), settings=Settings(_env_file=None), data_dir=tmp_path/"archive",
                         start="2026-10-02", end="2026-10-02")
     assert report["status"] == "research_partial" and not report["trades"]
+    assert report["sizing_policy_version"] == SIZING_VERSION
     assert not report["coverage_summary"]["full_sessions"]
     assert broker.state == before and event_bus.recent(100) == events

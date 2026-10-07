@@ -94,6 +94,22 @@ def test_archive_warmup_retains_api_responses_but_not_previous_session_books(tmp
     assert {e["id"] for e in events} == {"warmup","session-policy","session-book"}
 
 
+def test_compact_archive_preserves_book_and_protection_retry_interface(tmp_path):
+    from app.backtest.autonomous_replay import ReplayGateway
+    from tests.test_paper import contract
+    import zlib
+    book={**contract(), "security_id":"12345", "bid":100., "ask":100.05, "quote_update_timestamp":"2026-09-04T10:00:00+05:30"}
+    with sqlite3.connect(tmp_path/"market_observations.db") as c:
+        c.execute("CREATE TABLE observations(id TEXT,received_at TEXT,kind TEXT,generation INTEGER,payload TEXT)")
+        c.execute("INSERT INTO observations VALUES(?,?,?,?,?)",('book',book['quote_update_timestamp'],'option_depth',0,json.dumps(book)))
+    event=captured_events(tmp_path,"2026-09-04","2026-09-04",compact_books=True)[0]
+    assert json.loads(zlib.decompress(event['payload']))==book
+    assert event['contract']==book
+    gateway=ReplayGateway()
+    gateway.frames[str(book['security_id'])]=pd.DataFrame([{'low':98.}])
+    assert gateway.contract_candles(book,'2026-09-04','2026-09-05',cache_seconds=0).iloc[0]['low']==98.
+
+
 def test_full_returned_chain_includes_oi_outside_the_previous_atm_window():
     rows = chain_fixture()
     rows[-2]["oi"] = 100000.
@@ -175,7 +191,7 @@ def test_captured_bid_ask_replay_opens_and_closes_the_shared_autonomous_policy(t
     trade = report["trades"][0]
     assert trade["option_type"] == "PUT" and trade["reason"] == "TARGET" and trade["pnl"] > 0
     assert trade["entry_quote_observation_id"] == "05-entry-book" and trade["exit_quote_observation_id"] == "06-exit-book"
-    assert trade["qty"] > trade["lot_size"] and trade["risk_rupees"] <= 650
+    assert trade["qty"] > trade["lot_size"] and 650 < trade["risk_rupees"] <= min(650*trade["qty"]//trade["lot_size"],1000)
     assert trade["entry_ts"] == now.isoformat() and trade["exit_ts"] == (now+timedelta(seconds=2)).isoformat()
     assert report["status"] == "research_partial" and not report["coverage_summary"]["full_sessions"]
     assert report["input_digest"] and report["policy_settings_digest"]

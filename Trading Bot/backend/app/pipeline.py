@@ -18,30 +18,40 @@ def finite(value):
     except (TypeError,ValueError): return False
 
 
+class CandidateRejected(ValueError):
+    """Expected entry gate; the candidate is ineligible, not a broken worker."""
+
+
+class CandidateDataUnavailable(CandidateRejected):
+    """Expected entry gate that can be retried with actual provider evidence."""
+
+
 def plan_protection(signal, contract, retest_quote, entry_price, reward_multiple=2., horizon_minutes=10, min_stop=0.):
     """Freeze an observed option-structure stop, never adjust it to fit risk."""
     if reward_multiple < 2 or horizon_minutes not in (3, 5, 10, 20, 30, 45, 60):
         raise ValueError("Unsupported frozen protection configuration")
     if not retest_quote or retest_quote.get("contract_id") != contract.get("contract_id"):
-        raise ValueError("Selected contract retest candle is unavailable")
+        raise CandidateDataUnavailable("Selected contract retest candle is unavailable")
     for key in ("expiry", "strike", "lot_size", "option_type"):
         if retest_quote.get(key) != contract.get(key):
-            raise ValueError("Retest contract identity changed")
+            raise CandidateDataUnavailable("Retest contract identity changed")
     tick = contract.get("tick_size")
     low = retest_quote.get("low")
     if not all(finite(v) and v > 0 for v in (tick, low, entry_price)):
-        raise ValueError("Invalid observed protection inputs")
+        raise CandidateDataUnavailable("Invalid observed protection inputs")
     if min_stop > 0:
         raw_dist = entry_price - (low - tick) if low < entry_price else 0.
         stop_dist = max(raw_dist, min_stop)
         stop = round(math.floor((entry_price - stop_dist + 1e-10) / tick) * tick, 8)
         if not 0 < stop < entry_price:
-            raise ValueError("Structural option stop is not below the proposed entry")
+            raise CandidateRejected("Structural option stop is not below the proposed entry")
+        # Tick rounding can widen the stop; declare reward against that actual distance.
+        stop_dist = entry_price - stop
         target = round(math.ceil((entry_price + reward_multiple * stop_dist - 1e-10) / tick) * tick, 8)
     else:
         stop = round(math.floor((low - tick + 1e-10) / tick) * tick, 8)
         if not 0 < stop < entry_price:
-            raise ValueError("Structural option stop is not below the proposed entry")
+            raise CandidateRejected("Structural option stop is not below the proposed entry")
         target = round(math.ceil((entry_price + reward_multiple * (entry_price - stop) - 1e-10) / tick) * tick, 8)
     return {**signal, "stop_price": stop, "target_price": target,
             "stop_percent": (entry_price - stop) / entry_price,

@@ -6,7 +6,7 @@ import pandas as pd
 from .strategy_portfolio import STRATEGIES, closed_session, evaluate_completed_bars
 from .simple_paper import trend_signal
 from .market_structure import analyze_structure, structure_evidence
-from .pipeline import plan_protection
+from .pipeline import plan_protection, CandidateRejected, CandidateDataUnavailable
 from .option_screen import describe as option_screen_policy
 
 VERSION = "autonomous-paper-v1"
@@ -73,12 +73,12 @@ def evaluate_market(frame, now, symbol, structure=None):
 def plan_candidate(signal, contract, candle):
     atr = candle.get("option_atr")
     if not isinstance(atr, (float, int)) or not math.isfinite(atr) or atr <= 0:
-        raise ValueError("Completed selected-contract ATR required for adaptive protection")
+        raise CandidateDataUnavailable("Completed selected-contract ATR required for adaptive protection")
     planned = plan_protection(signal, contract, candle, contract["ask"],
                               horizon_minutes=signal["horizon_minutes"], min_stop=atr)
     evidence = signal.get("market_structure", {})
     if evidence.get("status") != "OBSERVED":
-        raise ValueError("Current causal support/resistance evidence unavailable")
+        raise CandidateDataUnavailable("Current causal support/resistance evidence unavailable")
     delta = abs(float(contract["delta"]))
     direction = 1 if signal["option_type"] == "CALL" else -1
     price = float(signal["feature_row"]["close"])
@@ -88,11 +88,11 @@ def plan_candidate(signal, contract, candle):
     if obstacle:
         boundary = float(obstacle["lower"] if direction == 1 else obstacle["upper"])
         if direction*(boundary-price) < projected_move:
-            raise ValueError(f"Insufficient 2R target room before confirmed {obstacle['timeframe']} zone")
+            raise CandidateRejected(f"Insufficient 2R target room before confirmed {obstacle['timeframe']} zone")
         target = min(target, boundary) if direction == 1 else max(target, boundary)
     old_target = signal.get("underlying_target")
     if old_target is not None and direction*(float(old_target)-price) < projected_move:
-        raise ValueError("Range midpoint offers insufficient room for the declared 2R premium target")
+        raise CandidateRejected("Range midpoint offers insufficient room for the declared 2R premium target")
     planned.update(underlying_target=target)
     planned["protection_evidence"].update(source="completed_contract_structure_and_ATR",
         option_atr=atr, target_room_points=direction*(target-price), target_room_basis="Observed delta approximation, not an option payoff guarantee")

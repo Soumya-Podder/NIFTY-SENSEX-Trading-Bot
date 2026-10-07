@@ -68,8 +68,11 @@ class AutonomousPaperEngine(MultiStrategyPaperEngine):
             return None,"Current completed-bar regime no longer supports the setup"
         last=bars.iloc[-1]
         if signal["strategy_id"] in {"trend_continuation","trend_pullback"}:
-            if (last.close<=last.ema21 if call else last.close>=last.ema21) or abs(last.close-last.ema21)>2*last.atr:
-                return None,"Current trend is contradictory or extended beyond two ATR from EMA 21"
+            if last.close<=last.ema21 if call else last.close>=last.ema21:
+                return None,f"Current completed close crossed EMA 21 against {signal['option_type']} setup"
+            extension=abs(last.close-last.ema21)/last.atr
+            if extension>2:
+                return None,f"Current completed close is {extension:.2f} ATR from EMA 21; maximum is 2 ATR"
         snapshot=self.status["market_structure"].get(signal["symbol"], {})
         evidence=structure_evidence(snapshot,signal["option_type"],now)
         relation="RESISTANCE" if call else "SUPPORT"
@@ -143,6 +146,7 @@ class AutonomousPaperEngine(MultiStrategyPaperEngine):
                 "authority": "PAPER_ONLY", "monthly_net_objective": self.settings.monthly_profit_target,
                 "selection": "Current regime, completed setups, target room, full returned OI context, fresh option depth, net economics and atomic account risk",
                 "management": self.status.get("management", {}), "learning": self.learning.status(),
+                "recovery": self.status.get("recovery", {}),
                 "learning_error": self.status.get("paper_learning_error"),
                 "limitations": ["OI does not identify institutional buyers or option writers", "Paper fills and fee estimates do not establish live profitability",
                                 "No calibrated direction or target-before-stop probability is deployed", "Learning can filter paper entries after independent replay; it cannot change risk or live authority"]}

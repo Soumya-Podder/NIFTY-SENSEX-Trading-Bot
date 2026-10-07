@@ -31,6 +31,11 @@ def renew_project_token(now,*,path=PROJECT_ENV):
         response=requests.get('https://api.dhan.co/v2/RenewToken',
             headers={'access-token':token,'dhanClientId':client},timeout=(5,15))
         if response.status_code!=200:
+            try: code=response.json().get('errorCode')
+            except (ValueError,AttributeError): code=None
+            if code in {'DH-901','DH-906','807','808','809'}:
+                return {**result,'status':'RENEWAL_FAILED','error_code':code,'requires_user_action':True,
+                    'reason':'Dhan rejected the current token; replace DHAN_ACCESS_TOKEN in the project .env'}
             return {**result,'status':'RENEWAL_FAILED','reason':'Dhan renewal HTTP '+str(response.status_code)}
         payload=response.json()
         new_token=payload.get('accessToken','')

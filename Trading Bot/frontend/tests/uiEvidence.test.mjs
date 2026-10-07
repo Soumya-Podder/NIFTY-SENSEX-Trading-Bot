@@ -47,3 +47,28 @@ test('agent status omits an empty position panel but preserves management decisi
  assert.match(markup, /Session liquidation requested/);
  assert.match(markup, /worker stopped/);
 });
+
+test('recovery status distinguishes a blocked repair from historical recovery and escapes error evidence', () => {
+ const markup = render(AutonomyStatus, { data: { strategies: [], learning: {}, monthly_net_objective: 18000,
+  recovery: { state: 'DEGRADED', checked_at: '2026-10-07T10:00:00+05:30',
+   components: { quote_recorder: { state: 'RETRYING', cause: '<script>bad()</script>', action: 'Restart stopped recorder', attempts: 2, error_type: 'OSError' } },
+   history: [{ component: 'market_feed', state: 'RECOVERED', checked_at: '2026-10-07T09:59:00+05:30', action: 'Reconnect after backoff' }],
+  },
+ } });
+ assert.match(markup, /Automatic recovery · DEGRADED/);
+ assert.match(markup, /1 components awaiting recovery/);
+ assert.match(markup, /quote recorder · RETRYING/);
+ assert.match(markup, /2 attempts · OSError/);
+ assert.match(markup, /market feed · RECOVERED/);
+ assert.match(markup, /Historical repairs are not proof of current entry readiness/);
+ assert.doesNotMatch(markup, /<script>/);
+ assert.match(markup, /&lt;script&gt;/);
+});
+
+test('recovery startup does not claim runtime checks have passed', () => {
+ const markup = render(AutonomyStatus, { data: { strategies: [], learning: {}, monthly_net_objective: 18000,
+  recovery: { state: 'STARTING', components: {}, history: [] },
+ } });
+ assert.match(markup, /Checking current runtime/);
+ assert.doesNotMatch(markup, /Runtime checks active/);
+});

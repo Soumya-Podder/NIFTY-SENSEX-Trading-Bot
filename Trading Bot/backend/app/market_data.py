@@ -4,6 +4,7 @@ import io
 import hashlib
 import json
 import asyncio
+import math
 import uuid
 from collections import deque
 import requests
@@ -55,6 +56,10 @@ class DhanMarketData:
         self.lock=threading.RLock()
         self.stopping=threading.Event()
         self.last_attempt=0.0
+        self.reconnect_after=0.0
+        self.reconnect_failures=0
+        self.connection_http_status=None
+        self.failed_attempt=None
         self.gateway=gateway
         self.store=store
         self.last_sequence={}
@@ -71,7 +76,8 @@ class DhanMarketData:
             return self._refresh_credentials(client_id,access_token,force)
 
     def _refresh_credentials(self,client_id,access_token,force=False):
-        if not force and (client_id,access_token)==(self.client_id,self.access_token): return False
+        changed=(client_id,access_token)!=(self.client_id,self.access_token)
+        if not force and not changed: return False
         self.stop()
         if self.thread: self.thread.join(timeout=3)
         if self.thread and self.thread.is_alive():
@@ -80,12 +86,16 @@ class DhanMarketData:
             self.client_id,self.access_token=client_id,access_token
             self.latest.clear(); self.option_quotes.clear(); self.last_packet_at=None
             self.feed=None; self.thread=None; self.last_attempt=0
+            if changed:
+                self.error=None; self.connection_http_status=None
+                self.reconnect_after=0; self.reconnect_failures=0; self.failed_attempt=None
             self.stopping.clear(); self.credential_generation+=1
         self.start()
         return True
 
     def reconnect_if_idle(self):
         if not self.configured or session_state() not in {"ENTRY_WINDOW","MANAGE_ONLY"}: return False
+        if time.monotonic()<self.reconnect_after: return False
         if time.monotonic()-self.last_attempt<30: return False
         now=now_ist()
         with self.lock:
@@ -128,11 +138,13 @@ class DhanMarketData:
         return bool(self.client_id and self.access_token and self.symbol_names)
 
     def start(self) -> None:
-        if not self.configured or self.stopping.is_set() or (self.thread and self.thread.is_alive()) or time.monotonic()-self.last_attempt<15:
-            return
-        self.last_attempt=time.monotonic()
-        self.thread = threading.Thread(target=self._run, name="dhan-market-feed", daemon=True)
-        self.thread.start()
+        with self.lock:
+            now=time.monotonic()
+            if not self.configured or self.stopping.is_set() or (self.thread and self.thread.is_alive()) or now-self.last_attempt<15 or now<self.reconnect_after:
+                return
+            self.last_attempt=now
+            self.thread = threading.Thread(target=self._run, name="dhan-market-feed", daemon=True)
+            self.thread.start()
 
     def _run(self) -> None:
         try:
@@ -162,6 +174,10 @@ class DhanMarketData:
             self.feed.run()
         except Exception as exc:
             self._on_error(self.feed, exc)
+        finally:
+            if self.feed:
+                try: self.feed.close_connection()
+                except Exception: pass
 
     def _resolve_instruments(self, frame, market_feed) -> list[tuple[str, str, str]]:
         columns = {str(column).upper(): column for column in frame.columns}
@@ -221,8 +237,11 @@ class DhanMarketData:
                                    "source": "dhan_quote_snapshot"}
 
     def _on_connect(self, _feed) -> None:
-        self.connected = True
-        self.error = None
+        with self.lock:
+            self.connected = True
+            self.error = None
+            self.connection_http_status=None
+            self.reconnect_after=0; self.reconnect_failures=0; self.failed_attempt=None
         if self.recorder: self.recorder.record("feed_connected",{},self.credential_generation)
 
     def _on_close(self,*_args):
@@ -240,8 +259,31 @@ class DhanMarketData:
         self.connected=False
 
     def _on_error(self, _feed, exc: Exception) -> None:
-        self.connected = False
-        self.error = "Market feed error: "+type(exc).__name__+"; check current credentials and data access"
+        if self.stopping.is_set() or (_feed is not None and _feed is not self.feed): return
+        # The SDK also retries internally every second. End that loop so only
+        # this adapter controls retries, and close its socket in _run's finally.
+        if _feed is not None: _feed._running=False
+        with self.lock:
+            self.connected=False
+            if self.failed_attempt==self.last_attempt: return
+            self.failed_attempt=self.last_attempt
+            self.reconnect_failures+=1
+            response=getattr(exc,"response",None)
+            status=getattr(response,"status_code",None)
+            self.connection_http_status=status
+            delay=min(300,(60 if status==429 else 15)*2**min(self.reconnect_failures-1,5))
+            try:
+                retry_after=float(getattr(response,"headers",{}).get("Retry-After",0))
+                if math.isfinite(retry_after): delay=max(delay,retry_after)
+            except (ValueError,TypeError): pass
+            self.reconnect_after=time.monotonic()+delay
+            if status==429:
+                self.error="Market feed throttled (HTTP 429); retrying after backoff"
+            elif status in {401,403}:
+                self.error=f"Market feed access rejected (HTTP {status}); check current credentials and data access"
+            else:
+                detail=f"HTTP {status}" if status else type(exc).__name__
+                self.error=f"Market feed connection error: {detail}; retrying after backoff"
 
     def _on_message(self, _feed, payload: Any) -> None:
         if self.stopping.is_set() or (_feed is not None and _feed is not self.feed): return
@@ -324,6 +366,8 @@ class DhanMarketData:
                 "requested_symbols": self.symbol_names, "symbols": symbols,
                 "source": "dhan_market_feed" if self.configured else "unavailable",
                 "error": self.error,"last_packet_at":self.last_packet_at,
+                "connection_http_status":self.connection_http_status,
+                "reconnect_in_seconds":round(max(0,self.reconnect_after-time.monotonic()),1),
                 "option_subscriptions":len(self.option_contracts),"option_depth_quotes":len(self.option_quotes),
                 "options_by_symbol":{s:{"subscribed":sum(c["symbol"]==s for c in option_contracts),
                     "fresh_depth":sum(q["symbol"]==s and quote_is_fresh(q) for q in option_quotes)} for s in self.symbol_names},

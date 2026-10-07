@@ -51,6 +51,12 @@ class PaperBroker:
 
     def health(self): return {"healthy":self.persistence_error is None,"mode":"paper","simulated_execution":True,"persistence_error":self.persistence_error}
 
+    def recover_persistence(self):
+        """Retry the committed account write; never reconstruct or invent a fill."""
+        with self.lock:
+            if self.persistence_error: self._persist()
+            return self.persistence_error is None
+
     def positions(self):
         with self.lock: return {"quantity":sum(p["qty"] for p in self.state["positions"]),"positions":[dict(p) for p in self.state["positions"]]}
 
@@ -206,7 +212,7 @@ class PaperBroker:
                 if Decimal(str(target))-Decimal(str(price)) < 2*(Decimal(str(price))-Decimal(str(stop))):
                     raise ValueError("Plan requires a predeclared target with at least 2:1 nominal reward/risk")
                 planned_risk=(price-stop+max(0,price-float(quote["bid"])))*quantity+round_trip
-                if not math.isfinite(planned_risk) or planned_risk<=0 or planned_risk>min(self.policy.trade_risk,self.policy.remaining(self.state["loss_ledger"])):
+                if not math.isfinite(planned_risk) or planned_risk<=0 or planned_risk>self.policy.risk_budget(self.state["loss_ledger"],quantity//lot):
                     raise ValueError("All-in stop risk exceeds remaining plan allocation")
                 if debit>min(self.state["initial_capital"],self.policy.premium_limit) or self.state["cash"]-debit<self.policy.cash_reserve:
                     raise ValueError("Plan premium commitment or cash reserve exceeded")
