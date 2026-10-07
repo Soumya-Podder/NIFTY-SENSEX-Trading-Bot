@@ -337,8 +337,9 @@ class MultiStrategyPaperEngine(PaperEngine):
     def _execution_snapshot(self,symbol):
         if self.market and hasattr(self.market,"execution_snapshot"):
             snap=self.market.execution_snapshot(symbol)
-            with self.lock: fallback={k:dict(v) for k,v in self.quotes.items() if v.get("symbol")==symbol}
-            return snap.get("underlying",{}),{**fallback,**snap.get("options",{})}
+            # A reconnect clears the executable feed cache. A prior worker copy
+            # cannot stand in for a book missing from the current connection.
+            return snap.get("underlying",{}),snap.get("options",{})
         underlying=(self.market.snapshot().get("symbols",{}).get(symbol,{}) if self.market else {})
         return underlying,{k:v for k,v in self._quotes().items() if v.get("symbol")==symbol}
 

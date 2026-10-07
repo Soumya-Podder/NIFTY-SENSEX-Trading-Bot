@@ -365,10 +365,10 @@ class DhanMarketData:
             symbol = self.security_to_symbol.get(security_id)
             if not symbol or key[0]!=0:
                 continue
-            ordering=self._packet_order(key,packet,received)
-            if ordering["ordering_rejected"]: continue
             ltp = float(packet["LTP"]) if packet.get("LTP") is not None else None
             if ltp is None: continue
+            ordering=self._packet_order(key,packet,received)
+            if ordering["ordering_rejected"]: continue
             close = float(packet["close"]) if packet.get("close") not in (None, "") else None
             tick = {**ordering,"symbol": symbol, "security_id": security_id,
                     "timestamp": datetime.now(timezone.utc).isoformat(),

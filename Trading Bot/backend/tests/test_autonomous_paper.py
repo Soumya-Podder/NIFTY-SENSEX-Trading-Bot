@@ -18,6 +18,14 @@ from tests.test_paper import plan_account, contract, quote, enter
 from tests.test_simple_paper import downtrend_frame
 
 
+def test_empty_live_snapshot_cannot_reuse_a_cached_pre_reconnect_book(tmp_path,monkeypatch):
+    engine=setup_engine(tmp_path,monkeypatch)[0]
+    engine.quotes=engine.market.execution_snapshot('NIFTY')['options']
+    assert engine.quotes
+    monkeypatch.setattr(engine.market,'execution_snapshot',lambda symbol:{'underlying':{},'options':{}})
+    assert engine._execution_snapshot('NIFTY')==({}, {})
+
+
 def setup_engine(tmp_path, monkeypatch):
     broker, store, clock = plan_account(tmp_path)
     clock["now"] += timedelta(minutes=5)

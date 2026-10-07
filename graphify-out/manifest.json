@@ -120,9 +120,9 @@
     "semantic_hash": "43568807d6e277446c340d3443ff6d96"
   },
   "Trading Bot/backend/app/broker.py": {
-    "mtime": 1791388139.825531,
-    "seen": 1791389362.8978252,
-    "ast_hash": "836fc93724dda71e6a7398390d1c474f",
+    "mtime": 1791392225.9063914,
+    "seen": 1791393336.8536603,
+    "ast_hash": "b57ebb7420457715e25c7e426b83551f",
     "semantic_hash": ""
   },
   "Trading Bot/backend/app/circuit_breaker.py": {
@@ -174,9 +174,9 @@
     "semantic_hash": "70926ce92f4a5b35eba587bbe918c3d6"
   },
   "Trading Bot/backend/app/main.py": {
-    "mtime": 1791371438.421173,
-    "seen": 1791371832.3641589,
-    "ast_hash": "3be0c72b003fc132145b8a2ce89b2287",
+    "mtime": 1791392225.9053912,
+    "seen": 1791393336.8536603,
+    "ast_hash": "7e2bd6f30dac22ea0568bc745295b7dd",
     "semantic_hash": ""
   },
   "Trading Bot/backend/app/market_calendar.py": {
@@ -186,9 +186,9 @@
     "semantic_hash": "59685501d7a73b25f415b05563ecac6f"
   },
   "Trading Bot/backend/app/market_data.py": {
-    "mtime": 1791387262.8969047,
-    "seen": 1791387496.7461836,
-    "ast_hash": "c7b841ba3b04b8479c4cc29700be7887",
+    "mtime": 1791392970.8707232,
+    "seen": 1791393336.8536603,
+    "ast_hash": "be526992aa008ba4d68520f2e23e644a",
     "semantic_hash": ""
   },
   "Trading Bot/backend/app/models.py": {
@@ -204,9 +204,9 @@
     "semantic_hash": "499999fc6ad2f95e88fe8f94c554d089"
   },
   "Trading Bot/backend/app/paper_engine.py": {
-    "mtime": 1791389679.5477147,
-    "seen": 1791390035.548741,
-    "ast_hash": "8b5e3c36d638d7926fdfb4ae4fd66739",
+    "mtime": 1791392168.2314458,
+    "seen": 1791393336.8536603,
+    "ast_hash": "cfd27d23a7b49142d80a1f72e0e228ed",
     "semantic_hash": ""
   },
   "Trading Bot/backend/app/paper_performance.py": {
@@ -222,9 +222,9 @@
     "semantic_hash": ""
   },
   "Trading Bot/backend/app/portfolio_engine.py": {
-    "mtime": 1791389543.155692,
-    "seen": 1791390035.548741,
-    "ast_hash": "3701bd916f140416548fc7de24570f60",
+    "mtime": 1791392904.2176785,
+    "seen": 1791393336.8536603,
+    "ast_hash": "d1bf49a4b6db568e1d86f9bb988f4efb",
     "semantic_hash": ""
   },
   "Trading Bot/backend/app/provenance.py": {
@@ -234,9 +234,9 @@
     "semantic_hash": "e2f02ae87a6430aca05b387e4adf150e"
   },
   "Trading Bot/backend/app/quote_recorder.py": {
-    "mtime": 1790846522.1275733,
-    "seen": 1790847042.5309155,
-    "ast_hash": "176ed857dfc9db6284b2caf3fbb30240",
+    "mtime": 1791392168.2304323,
+    "seen": 1791393336.8536603,
+    "ast_hash": "4f7364c3775dbe79b581faa31f67910b",
     "semantic_hash": ""
   },
   "Trading Bot/backend/app/regime.py": {
@@ -252,15 +252,15 @@
     "semantic_hash": ""
   },
   "Trading Bot/backend/app/runtime_health.py": {
-    "mtime": 1791388139.8275433,
-    "seen": 1791389362.8978252,
-    "ast_hash": "7ad383d7ffb2f1e8bdf96bd8c7c4c77f",
+    "mtime": 1791392260.2300503,
+    "seen": 1791393336.8536603,
+    "ast_hash": "0646905f932bf7c60bed1851117d6465",
     "semantic_hash": ""
   },
   "Trading Bot/backend/app/session.py": {
-    "mtime": 1790524940.9351828,
-    "seen": 1790525466.2871802,
-    "ast_hash": "14e322eba2f2d99f40ec16d1965df749",
+    "mtime": 1791392168.228983,
+    "seen": 1791393336.8536603,
+    "ast_hash": "ec4308c1a6aed449c841759f9bccf4e0",
     "semantic_hash": ""
   },
   "Trading Bot/backend/app/setups.py": {
@@ -312,9 +312,9 @@
     "semantic_hash": "34eef2b0e19658d7485ce150aa8485f9"
   },
   "Trading Bot/backend/paper_service.py": {
-    "mtime": 1791389061.4335272,
-    "seen": 1791389362.8978252,
-    "ast_hash": "df4afffeac505f0a5a2021b478038cc9",
+    "mtime": 1791392260.2290492,
+    "seen": 1791393336.8536603,
+    "ast_hash": "7efda5347104cff732f42c61257f9066",
     "semantic_hash": ""
   },
   "Trading Bot/backend/tests/__init__.py": {
@@ -414,9 +414,9 @@
     "semantic_hash": "d527f1d60aa79bc370a3ff3ccb2a0db0"
   },
   "Trading Bot/backend/tests/test_quote_recorder.py": {
-    "mtime": 1790846550.9314778,
-    "seen": 1790847042.5309155,
-    "ast_hash": "3a2e52c70d314cedc417f18276d03e9d",
+    "mtime": 1791392573.6006143,
+    "seen": 1791393336.8536603,
+    "ast_hash": "e1f91aacb033f0f8ad02679c0d196800",
     "semantic_hash": ""
   },
   "Trading Bot/backend/tests/test_reconstruction.py": {
@@ -648,9 +648,9 @@
     "semantic_hash": ""
   },
   "Trading Bot/NIFTY_SENSEX_Implementation_Plan.md": {
-    "mtime": 1791389942.2403963,
-    "seen": 1791390035.548741,
-    "ast_hash": "52278a6afde1aff4dd37ca60578a2709",
+    "mtime": 1791392904.2206717,
+    "seen": 1791393336.8536603,
+    "ast_hash": "cb3dd66659c8decac4ebb9e0a23de28f",
     "semantic_hash": ""
   },
   "Trading Bot/PROJECT_LOGIC.md": {
@@ -666,9 +666,9 @@
     "semantic_hash": ""
   },
   "Trading Bot/REMEDIATION_STATUS.md": {
-    "mtime": 1791389679.551715,
-    "seen": 1791390035.548741,
-    "ast_hash": "932b2415e7353266c0e62dece2b6a2fc",
+    "mtime": 1791393319.8520205,
+    "seen": 1791393336.8536603,
+    "ast_hash": "31db325cf8a3ff827569e52b29297470",
     "semantic_hash": ""
   },
   "Trading Bot/SELF_LEARNING_CORRECTION.md": {
@@ -1476,9 +1476,9 @@
     "semantic_hash": ""
   },
   "Trading Bot/backend/tests/test_operational_recovery.py": {
-    "mtime": 1791371438.4371867,
-    "seen": 1791371832.3651562,
-    "ast_hash": "3a46b159a1aa4b523a2595cf92e46edd",
+    "mtime": 1791392337.1908782,
+    "seen": 1791393336.8536603,
+    "ast_hash": "45c11cd6066ccbb7c83cef5fd287f574",
     "semantic_hash": ""
   },
   "Trading Bot/backend/app/simple_paper.py": {
@@ -1518,9 +1518,9 @@
     "semantic_hash": ""
   },
   "Trading Bot/backend/tests/test_autonomous_paper.py": {
-    "mtime": 1791389486.9504948,
-    "seen": 1791390035.548741,
-    "ast_hash": "7a73865add6083035947c3302f8a7726",
+    "mtime": 1791393013.5517013,
+    "seen": 1791393336.8536603,
+    "ast_hash": "1eedf4a6fc75cf4e160ae03b5632caa7",
     "semantic_hash": ""
   },
   "Trading Bot/backend/tests/test_autonomous_replay.py": {
@@ -1602,15 +1602,9 @@
     "semantic_hash": ""
   },
   "Trading Bot/backend/tests/test_automatic_recovery.py": {
-    "mtime": 1791389679.5487204,
-    "seen": 1791390035.548741,
-    "ast_hash": "2a9cf8059232e1d36c6fd80b0f3cfa06",
-    "semantic_hash": ""
-  },
-  ".codex-remote-attachments/01a07f61-650c-7fc3-91b0-0b143d852e0e/5470d3b9-2fbd-4999-809b-de9adc76ab44/1-1000332275.jpg": {
-    "mtime": 1791349692.639041,
-    "seen": 1791370028.8919685,
-    "ast_hash": "c715efeb41ae15df727e30c92378a776",
+    "mtime": 1791392728.9772396,
+    "seen": 1791393336.8536603,
+    "ast_hash": "8f69986ba3089c5aa070317a5811bcb0",
     "semantic_hash": ""
   }
 }
