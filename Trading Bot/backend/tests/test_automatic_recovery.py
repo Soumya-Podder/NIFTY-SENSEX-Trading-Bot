@@ -349,8 +349,8 @@ def test_renewal_never_fabricates_or_overwrites_user_credentials(tmp_path,monkey
     assert bool(calls)==(kind in {'failure','replacement'})
 
 
-@pytest.mark.parametrize('session,held,renew',[('ENTRY_WINDOW',False,False),('MANAGE_ONLY',False,False),('PREOPEN',True,False),('PREOPEN',False,True)])
-def test_token_renewal_never_interrupts_entries_or_held_position(tmp_path,monkeypatch,session,held,renew):
+@pytest.mark.parametrize('session,held',[('ENTRY_WINDOW',False),('MANAGE_ONLY',False),('PREOPEN',True),('PREOPEN',False),('EXIT_ONLY',False),('WEEKEND',False)])
+def test_manually_managed_token_is_never_renewed_by_feed_watch(tmp_path,monkeypatch,session,held):
     broker,store,_=plan_account(tmp_path)
     engine=PaperEngine(Settings(_env_file=None),store,SimpleNamespace(credential_provider=True),broker)
     calls=[]
@@ -359,7 +359,7 @@ def test_token_renewal_never_interrupts_entries_or_held_position(tmp_path,monkey
     monkeypatch.setattr('app.credential_recovery.renew_project_token',lambda now:calls.append(now) or {'status':'NOT_DUE'})
     monkeypatch.setattr(engine.stop_event,'wait',lambda _:engine.stop_event.set())
     engine._feed_watch()
-    assert bool(calls)==renew
+    assert calls==[]
 
 
 def test_slow_history_http_does_not_hold_up_other_candle_requests(tmp_path):

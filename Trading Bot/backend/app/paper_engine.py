@@ -29,7 +29,6 @@ class PaperEngine:
         self.protection_attempts={}
         self.worker_targets={}
         self.worker_recovery_after={}
-        self.credential_renewal_after=0
         self.recovery_after={}; self.recovery_dirty=False
         saved=store.get_record("paper_recovery","status",{}) or {}
         self.status["recovery"]={"state":"STARTING","checked_at":None,"components":{},
@@ -99,10 +98,8 @@ class PaperEngine:
         while not self.stop_event.is_set():
             try:
                 self._recover_once()
-                if getattr(self.gateway,"credential_provider",None) and self._session() not in {"ENTRY_WINDOW","MANAGE_ONLY"} and not self.broker.positions()["positions"] and time.monotonic()>=self.credential_renewal_after:
-                    from .credential_recovery import renew_project_token
-                    self.credential_renewal_after=time.monotonic()+300
-                    self.status["credential_renewal"]=renew_project_token(self._now())
+                # Credentials are managed manually. Recovery reloads .env but
+                # must never renew a token or write a replacement into the file.
                 self.status["feed_watch_error"]=None
             except Exception as exc: self.status["feed_watch_error"]=type(exc).__name__+": waiting to reconnect market feed"
             self.stop_event.wait(2)
@@ -384,12 +381,11 @@ class PaperEngine:
             # current client. A new request may set a fresh error afterwards.
             self.status.pop("data_error",None)
             self.status.pop("credential_renewal",None)
-            self.credential_renewal_after=0
             for symbol_status in self.status.get("data_symbols",{}).values():
                 symbol_status.pop("error",None)
             self.last_credential_generation=self.gateway.credential_generation
         self.status["credentials"]={"checked_at":now.isoformat(),"generation":self.gateway.credential_generation,
-            "configured":all(credentials),"source":"project .env"}
+            "configured":all(credentials),"source":"project .env","management":"MANUAL","automatic_renewal":False}
 
     def _telegram_no_trade_reasons(self,day):
         excluded={"PREOPEN","MANAGE_ONLY","EXIT_ONLY","WEEKEND","HOLIDAY"}

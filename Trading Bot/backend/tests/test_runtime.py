@@ -96,12 +96,13 @@ def test_rotated_credentials_clear_stale_data_errors(tmp_path):
     engine.status.update(data_error="DH-901 Invalid_Authentication",
                          credential_renewal={"status":"RENEWAL_FAILED","error_code":"DH-906"},
                          data_symbols={"NIFTY":{"error":"DH-901 Invalid_Authentication"}})
-    engine.credential_renewal_after=999999999
 
     engine._refresh_runtime_credentials(datetime.now(IST))
 
     assert "data_error" not in engine.status
-    assert "credential_renewal" not in engine.status and engine.credential_renewal_after==0
+    assert "credential_renewal" not in engine.status
+    assert engine.status["credentials"]["management"]=="MANUAL"
+    assert engine.status["credentials"]["automatic_renewal"] is False
     assert "error" not in engine.status["data_symbols"]["NIFTY"]
     assert engine.status["credentials"]["generation"]==1
 

@@ -1,17 +1,17 @@
-# Graph Report - trading_bot_full  (2026-10-07)
+# Graph Report - trading_bot_full  (2026-10-09)
 
 ## Corpus Check
-- 265 files · ~228,359 words
+- 265 files · ~228,364 words
 - Verdict: corpus is large enough that graph structure adds value.
 - Unclassified: 20 file(s) not represented in the graph (top: .css 7, (none) 4, .bat 4)
 
 ## Summary
-- 3166 nodes · 6407 edges · 328 communities (234 shown, 84 thin omitted)
+- 3166 nodes · 6403 edges · 327 communities (231 shown, 86 thin omitted)
 - Extraction: 95% EXTRACTED · 5% INFERRED · 0% AMBIGUOUS · INFERRED: 302 edges (avg confidence: 0.89)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `04826674`
+- Built from commit: `b08ae673`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -19,7 +19,7 @@
 - Getting Started
 - PaperEngine
 - DhanGateway
-- jobs.py
+- engine.py
 - models.py
 - test_market_context.py
 - Allowed and Restricted Operations
@@ -33,25 +33,25 @@
 - DhanMarketData
 - QuoteRecorder
 - react
-- local_time
+- update_exit
 - test_dhan_observations.py
 - main.tsx
-- test_runtime.py
+- test_failed_persistence_restores_account_and_prevents_ghost_fill
 - ForwardComparison
 - Store
 - EventBus
 - frontend/package.json
 - audit_individual_agents
 - MarketTerminal.tsx
-- BacktestEngine
-- test_forward_comparison.py
+- PaperResearchLearning
+- local_time
 - ValueError
 - contract
 - Self-Learning System Status
 - post
 - test_option_screen.py
 - MultiStrategyPaperEngine
-- autonomous_policy.py
+- strategy_portfolio.py
 - Caveman
 - CostModel
 - Ponytail
@@ -216,7 +216,7 @@
 - Version 2.3
 - Setting Up Postback
 - paper_performance.py
-- now_ist
+- download.py
 - Paper strategy portfolio v1
 - mode
 - 1. Eliminating Waterfalls
@@ -298,7 +298,7 @@
 - server-serialization.md
 - _template.md
 - AutonomousPaperEngine
-- engine.py
+- test_recovered_execution_loop_clears_only_its_technical_halt
 - Coordinator and specialist review — 27 September 2026
 - TelegramNotifier
 - PaperBroker
@@ -310,7 +310,6 @@
 - pipeline_from_events
 - CircuitBreaker
 - test_learning_validation.py
-- train_learning_model
 - 12. Learning and activation
 - 16. Run and verification commands
 - datetime
@@ -323,13 +322,13 @@
 - 6. Contract selection and sizing
 - 9. Context, support/resistance and sweeps
 - audit_observation_db
-- session_state
+- now_ist
 - local_mutations
-- Path
+- jobs.py
 - test_candle_recovery.py
 - test_option_chain_cache_retains_original_observation_time
 - test_reconstruction.py
-- report_from_run
+- report_view
 - test_coordinator_watchdog_restarts_dead_workers_without_order_authority
 - test_expiry_day_is_skipped_for_paper_policy
 - oracle/README.md
@@ -350,35 +349,35 @@
 ## Surprising Connections (you probably didn't know these)
 - `test_coordinator_has_no_independent_order_authority()` --uses--> `AutonomousTradingAgent`  [INFERRED]
   Trading Bot/backend/tests/test_execution_integrity.py → Trading Bot/backend/app/autonomous_agent.py
+- `recorded_seconds()` --calls--> `close_connection()`  [INFERRED]
+  Trading Bot/backend/app/chart_replay.py → Trading Bot/backend/tests/test_automatic_recovery.py
 - `training_gate_results()` --uses--> `CostModel`  [INFERRED]
   Trading Bot/backend/app/ai.py → Trading Bot/backend/app/expectancy.py
 - `BacktestEngine` --uses--> `MLTradeQualityModel`  [INFERRED]
   Trading Bot/backend/app/backtest/engine.py → Trading Bot/backend/app/ai.py
 - `PaperResearchLearning` --uses--> `MLTradeQualityModel`  [INFERRED]
   Trading Bot/backend/app/paper_learning.py → Trading Bot/backend/app/ai.py
-- `test_learning_freezes_next_session_and_rejects_noncausal_features()` --uses--> `MLTradeQualityModel`  [INFERRED]
-  Trading Bot/backend/tests/test_autonomous_paper.py → Trading Bot/backend/app/ai.py
 
 ## Import Cycles
 - None detected.
 
-## Communities (328 total, 84 thin omitted)
+## Communities (327 total, 86 thin omitted)
 
 ### Community 0 - "Getting Started"
 Cohesion: 0.01
 Nodes (245): 1. Create an Account, 2. Generate API Credentials, 3. Install the SDK, 4. Initialize the Client, 5. Place Your First Order, A Few Things to Know, Adding Credits, Adding Instruments (+237 more)
 
 ### Community 1 - "PaperEngine"
-Cohesion: 0.13
-Nodes (8): Conservative paper exit fee from Dhan quotes saved at entry; no HTTP., PaperEngine, reload_credentials(), restart_recorder(), restart_workers(), One failed repair cannot interrupt other repairs or protective workers., Check held contracts independently of entry scans and data requests., test_recovery_backoff_journal_and_restart_keep_actual_failures_visible()
+Cohesion: 0.11
+Nodes (10): ExpectancyEngine, Conservative paper exit fee from Dhan quotes saved at entry; no HTTP., Observed NET outcomes; fees are already included and never deducted twice.…, PaperEngine, reload_credentials(), restart_recorder(), restart_workers(), One failed repair cannot interrupt other repairs or protective workers. (+2 more)
 
 ### Community 2 - "DhanGateway"
 Cohesion: 0.12
 Nodes (8): DhanGateway, One rate-limited, cached data adapter shared by paper and research., Reuse overlapping sourced responses; fetch only uncovered date intervals., Resolve the nearest unexpired fixed futures contract from the dated master., Dated fixed-contract futures data for advisory VWAP; never an order., Publish complete observed sessions to the permanent chart history catalogue., test_empty_history_is_not_retained_forever(), test_retained_history_reuses_sqlite_without_provider_call()
 
-### Community 3 - "jobs.py"
-Cohesion: 0.10
-Nodes (20): extract_features(), Caller supplies a completed causal row; missing volume/Greeks stay missing., Durable, single-worker backtests; browser lifetime never owns a running job., dhan_plan_research(), dhan_research(), Dhan rolling candles -> fixed-strike intraday research, never verified net…, Audit the real baseline without laundering rolling offsets into contracts., close() (+12 more)
+### Community 3 - "engine.py"
+Cohesion: 0.11
+Nodes (26): extract_features(), Caller supplies a completed causal row; missing volume/Greeks stay missing., Chronological, shared-cash replay. Every position retains a fixed contract ID., dhan_plan_research(), Dhan rolling candles -> fixed-strike intraday research, never verified net…, Audit the real baseline without laundering rolling offsets into contracts., close(), Standard Dhan index option round-trip charges (₹40 brokerage + STT + turnover +… (+18 more)
 
 ### Community 4 - "models.py"
 Cohesion: 0.09
@@ -393,16 +392,16 @@ Cohesion: 0.05
 Nodes (37): Allowed, Allowed and Restricted Operations, Architecture, Blocked, Checking Fund Limits, Code Scanner, Common Flags and How to Fix Them, Compatible clients (+29 more)
 
 ### Community 7 - "PlanRiskPolicy"
-Cohesion: 0.15
-Nodes (14): build_replay_config(), One settings snapshot for dashboard, command-line and observed-session replay., monthly_progress(), Account cash/equity already deducts fees; never deduct charges twice., PlanRiskPolicy, Plan v1 risk envelope. Values are frozen configuration, not learned parameters., test_new_daily_budget_and_monthly_gross_profit_target(), test_current_screen_missing_depth_never_reports_zero_as_complete_performance() (+6 more)
+Cohesion: 0.11
+Nodes (29): build_replay_config(), One settings snapshot for dashboard, command-line and observed-session replay., BacktestConfig, BacktestEngine, metrics(), historical_signals(), Causal portfolio-rule replay with the same seven-day warmup as the live scanner., PlanRiskPolicy (+21 more)
 
 ### Community 8 - "AutonomousTradingAgent"
 Cohesion: 0.07
 Nodes (21): AgentState, AutonomousTradingAgent, get_autonomous_agent(), Start the autonomous agent loop., Stop the autonomous agent., Keep coordinator workers alive without creating another execution authority., Main agent loop - runs every 2 seconds during market hours., Background learning loop - retrains models periodically. (+13 more)
 
 ### Community 9 - "test_jobs.py"
-Cohesion: 0.06
-Nodes (34): resolve_backtest_budgets(), dataset_path(), archive_manifest(), BacktestJobs, before_commit(), cancelled(), ml_replay(), progress() (+26 more)
+Cohesion: 0.09
+Nodes (20): archive_manifest(), Describe the retained source pass without claiming complete exchange coverage., historical_gateway(), manager(), parametrize, test_archive_request_matrix_uses_persisted_scope(), test_atm6_extension_preserves_fields_and_near_bucket(), test_autonomous_job_cannot_use_inputs_that_lack_recorded_books() (+12 more)
 
 ### Community 10 - "portfolio_account"
 Cohesion: 0.13
@@ -414,15 +413,15 @@ Nodes (31): 1. You, 2. MCP Client, 3. Tool Call to mcp.dhan.co, 4. Dhan MCP Serv
 
 ### Community 12 - "main.py"
 Cohesion: 0.12
-Nodes (29): get, dataset_metadata(), Header inspection is an eligibility hint, not verified historical coverage., agent_state(), agents(), autonomy(), backtest_cache(), backtest_history() (+21 more)
+Nodes (30): get, dataset_metadata(), Header inspection is an eligibility hint, not verified historical coverage., agent_state(), agents(), autonomy(), backtest_cache(), backtest_history() (+22 more)
 
 ### Community 13 - "What You Must Do When Invoked"
 Cohesion: 0.08
 Nodes (24): For /graphify add and --watch, For /graphify query, For the commit hook and native CLAUDE.md integration, For --update and --cluster-only, /graphify, Honesty Rules, Interpreter guard for subcommands, Part A - Structural extraction for code files (+16 more)
 
 ### Community 14 - "DhanMarketData"
-Cohesion: 0.06
-Nodes (17): Exception, DhanMarketData, utc_time(), exchange_timestamp(), Any, Return the underlying and its option books from one locked observation., Seed latest values from one broker quote call; live ticks replace them., Dhan MarketFeed adapter. No tick is manufactured when the feed is down. (+9 more)
+Cohesion: 0.05
+Nodes (25): Exception, DhanMarketData, utc_time(), exchange_timestamp(), feed_trade_timestamp(), Any, Return the underlying and its option books from one locked observation., Seed latest values from one broker quote call; live ticks replace them. (+17 more)
 
 ### Community 15 - "QuoteRecorder"
 Cohesion: 0.13
@@ -432,9 +431,9 @@ Nodes (10): QuoteRecorder, Bounded, asynchronous recording of normalized observa
 Cohesion: 0.19
 Nodes (16): react, Data, decisionId(), decisionKind(), recentDecision(), registrySummary(), Data, day() (+8 more)
 
-### Community 17 - "local_time"
-Cohesion: 0.11
-Nodes (20): Causal paper exit state. A stop is a request, never a guaranteed fill., Persistable state; only fresh observed bids may call this function. ATR must…, update_exit(), Prospective reference account. No real-order authority or additive profit…, net_economics(), Observed option-buying filters. Preferences are hypotheses, not probabilities., One spread reserve at the adverse exit, plus round-trip charges once., Worker liveness is independent of market-data availability and strategy edge. (+12 more)
+### Community 17 - "update_exit"
+Cohesion: 0.32
+Nodes (7): Causal paper exit state. A stop is a request, never a guaranteed fill., Persistable state; only fresh observed bids may call this function. ATR must…, update_exit(), position(), test_completed_stall_requires_contiguous_bars(), test_cost_covering_stop_and_restart_never_loosen(), test_missing_option_atr_does_not_invent_trailing_volatility()
 
 ### Community 18 - "test_dhan_observations.py"
 Cohesion: 0.13
@@ -443,10 +442,6 @@ Nodes (20): DhanResponseRecorder, Aggregate only matched fixed contracts, never 
 ### Community 19 - "main.tsx"
 Cohesion: 0.09
 Nodes (26): api(), Data, AutonomyStatus(), Data, money(), active(), AgentLessons(), App() (+18 more)
-
-### Community 20 - "test_runtime.py"
-Cohesion: 0.12
-Nodes (14): ExpectancyEngine, Observed NET outcomes; fees are already included and never deducted twice.…, feed_trade_timestamp(), parametrize, test_failed_persistence_restores_account_and_prevents_ghost_fill(), quote(), Isolated runtime tests. No broker requests or production account writes., test_disabled_evidence_collection_cannot_start_with_zero_outcomes() (+6 more)
 
 ### Community 21 - "ForwardComparison"
 Cohesion: 0.13
@@ -472,21 +467,21 @@ Nodes (18): audit_individual_agents(), _day(), _finite(), _loss_investigation(),
 Cohesion: 0.17
 Nodes (22): replayCursor(), replayDate(), replayFrame(), replayLoadCursor(), replayTime(), levelsForPeriod(), STRUCTURE_PERIODS, Zone (+14 more)
 
-### Community 27 - "BacktestEngine"
+### Community 27 - "PaperResearchLearning"
 Cohesion: 0.20
-Nodes (21): BacktestConfig, BacktestEngine, historical_fixture(), Contract fixtures only for regression tests, never runtime market data., test_fixed_contract_drift_blocks_headline_pnl(), test_next_bar_open_and_entry_bar_stop(), test_plan_replay_structural_protection_and_one_position(), test_shared_portfolio_cannot_double_spend() (+13 more)
+Nodes (5): investigation(), PaperResearchLearning, Paper approval requires both paths through the same archived account simulation., test_incompatible_model_is_never_frozen_and_training_is_serialized(), test_used_holdout_cannot_be_repeated_as_new_learning()
 
-### Community 28 - "test_forward_comparison.py"
-Cohesion: 0.11
-Nodes (11): ExperimentStore, All reference-account writes remain in an isolated namespace., Broker, parametrize, Isolated lifecycle evidence; fake accounts never reach the live broker., running(), test_alive_thread_with_old_cycle_is_stale(), test_faults_cannot_finalize_as_complete() (+3 more)
+### Community 28 - "local_time"
+Cohesion: 0.12
+Nodes (13): ExperimentStore, Prospective reference account. No real-order authority or additive profit…, All reference-account writes remain in an isolated namespace., local_time(), Broker, parametrize, Isolated lifecycle evidence; fake accounts never reach the live broker., running() (+5 more)
 
 ### Community 29 - "ValueError"
-Cohesion: 0.15
-Nodes (26): model_validator, _valid_bar(), candles(), download(), fee_scenario(), fetch(), inject_receipts(), isolated_replay_frame() (+18 more)
+Cohesion: 0.10
+Nodes (32): model_validator, resolve_backtest_budgets(), _valid_bar(), broker_cost_receipts(), candles(), download(), fee_scenario(), fetch() (+24 more)
 
 ### Community 30 - "contract"
-Cohesion: 0.14
-Nodes (38): Largest whole-lot paper quantity inside cash, observed depth and stop risk., size_plan_order(), Local paper lifecycle checks using isolated storage and simulated feed packets., test_completed_retry_clears_only_exit_pending_halt(), test_documented_dhan_packets_without_sequence_remain_usable_but_not_exchange_verified(), test_exit_survives_rotation_restart_reconnect_and_partial_liquidation(), now(), test_option_packet_order_rejects_regression_without_refreshing_executable_book() (+30 more)
+Cohesion: 0.16
+Nodes (35): Largest whole-lot paper quantity inside cash, observed depth and stop risk., size_plan_order(), Local paper lifecycle checks using isolated storage and simulated feed packets., test_completed_retry_clears_only_exit_pending_halt(), test_documented_dhan_packets_without_sequence_remain_usable_but_not_exchange_verified(), test_exit_survives_rotation_restart_reconnect_and_partial_liquidation(), now(), test_option_packet_order_rejects_regression_without_refreshing_executable_book() (+27 more)
 
 ### Community 31 - "Self-Learning System Status"
 Cohesion: 0.12
@@ -504,17 +499,17 @@ Nodes (15): assess(), midpoint_spread(), number(), Reject missing/future evidenc
 Cohesion: 0.09
 Nodes (21): Return the seven auditable gates that precede any model fitting., training_gate_results(), evidence_records(), frequency(), label_outcomes(), outcome_scope(), Fixed-horizon outcome research. Historical frequencies are not calibrated…, Labels are attached AFTER replay; future rows never participate in candidate… (+13 more)
 
-### Community 35 - "autonomous_policy.py"
-Cohesion: 0.19
-Nodes (18): Autonomous paper selector with independent protection and auditable research., evaluate_market(), management_decision(), plan_candidate(), Shared causal entry and management policy for autonomous paper execution/replay., A completed reversal can end a hold early; it never widens risk or a stop., strategy_order(), describe() (+10 more)
+### Community 35 - "strategy_portfolio.py"
+Cohesion: 0.17
+Nodes (20): Autonomous paper selector with independent protection and auditable research., evaluate_market(), management_decision(), plan_candidate(), Shared causal entry and management policy for autonomous paper execution/replay., A completed reversal can end a hold early; it never widens risk or a stop., strategy_order(), Describe the nearest obstacle without inventing target prices from option delta. (+12 more)
 
 ### Community 36 - "Caveman"
 Cohesion: 0.50
 Nodes (3): Caveman, Project usage, Safety
 
 ### Community 37 - "CostModel"
-Cohesion: 0.11
-Nodes (11): RecordedFeeScenario, close_position(), broker_cost_receipts(), Observe exact Dhan calculator totals for one simulated round trip., CostModel, Only a dated source schedule can price a historical order., test_fee_receipt_failure_cannot_be_bypassed_by_an_in_memory_quote(), test_paper_fee_reserves_cover_price_moves_without_http_at_admission() (+3 more)
+Cohesion: 0.14
+Nodes (8): RecordedFeeScenario, close_position(), CostModel, Only a dated source schedule can price a historical order., test_fee_receipt_failure_cannot_be_bypassed_by_an_in_memory_quote(), test_paper_fee_reserves_cover_price_moves_without_http_at_admission(), request(), test_refreshed_fee_cache_keeps_earlier_receipt_for_causal_replay()
 
 ### Community 38 - "Ponytail"
 Cohesion: 0.50
@@ -573,12 +568,12 @@ Cohesion: 0.25
 Nodes (7): Account and authority, Agent responsibilities, Data-to-decision path, Execution realism, Learning and promotion gates, Paper trading and research architecture contract, Session lifecycle
 
 ### Community 52 - "ai.py"
-Cohesion: 0.15
-Nodes (15): metrics(), Entry-quality learning from causal, net-cost outcomes. No order authority., One fixed model/threshold, purged 70/30 day split, optional FULL replay. A…, Source validation. Rolling moneyness must never masquerade as a fixed contract., Fixed research gates. Passing these gates never proves absence of overfitting., replay_evidence(), has_synthetic_options(), Reject simulated option evidence even when a legacy report says verified. (+7 more)
+Cohesion: 0.13
+Nodes (17): metrics(), Entry-quality learning from causal, net-cost outcomes. No order authority., One fixed model/threshold, purged 70/30 day split, optional FULL replay. A…, Source validation. Rolling moneyness must never masquerade as a fixed contract., Fixed research gates. Passing these gates never proves absence of overfitting., replay_evidence(), has_synthetic_options(), Reject simulated option evidence even when a legacy report says verified. (+9 more)
 
 ### Community 53 - "LearningService"
-Cohesion: 0.16
-Nodes (18): LearningService, parametrize, Synthetic fixtures test mechanics, never trading performance evidence., test_incomplete_or_estimated_reports_do_not_fit_models(), test_net_cost_and_future_feature_exclusions(), test_promotion_waits_for_next_session_and_freezes_across_restart(), replay(), test_purged_holdout_not_reused_and_no_promotion_without_full_replay() (+10 more)
+Cohesion: 0.14
+Nodes (19): LearningService, parametrize, Synthetic fixtures test mechanics, never trading performance evidence., test_incomplete_or_estimated_reports_do_not_fit_models(), test_net_cost_and_future_feature_exclusions(), test_promotion_waits_for_next_session_and_freezes_across_restart(), replay(), test_purged_holdout_not_reused_and_no_promotion_without_full_replay() (+11 more)
 
 ### Community 54 - "Order Management"
 Cohesion: 0.25
@@ -618,11 +613,11 @@ Nodes (5): Adaptive exits, Entry-quality learning, Historical data learning and 
 
 ### Community 63 - "test_backtest.py"
 Cohesion: 0.07
-Nodes (34): metrics(), _agent_trades(), learn_from_outcomes(), _learn_from_outcomes(), _passes(), plan_agent_capabilities(), Every outcome is logged. Promotion requires fresh, full chronological replays., Restrict learning statistics to outcomes with recorded agent context. (+26 more)
+Nodes (40): add_features(), adx(), atr(), ema(), rsi(), _agent_trades(), learn_from_outcomes(), _learn_from_outcomes() (+32 more)
 
 ### Community 64 - "test_automatic_recovery.py"
-Cohesion: 0.07
-Nodes (35): Renew an active Dhan Web token before expiry; secrets stay in project .env., renew_project_token(), token_expiry(), completed_candles_ready(), execution_health(), execution_stalled(), Missing quotes are not a stall. Observe protection separately when occupied., parametrize (+27 more)
+Cohesion: 0.08
+Nodes (32): current_credentials(), The project's .env is authoritative over inherited, possibly stale credentials., Renew an active Dhan Web token before expiry; secrets stay in project .env., renew_project_token(), token_expiry(), execution_stalled(), Missing quotes are not a stall. Observe protection separately when occupied., parametrize (+24 more)
 
 ### Community 65 - "Market Data"
 Cohesion: 0.33
@@ -645,8 +640,8 @@ Cohesion: 0.33
 Nodes (6): Example Request, Modify Super Order, Path Parameters, Request Body Parameters, Response Fields, Status Codes
 
 ### Community 70 - "test_learning_monitor.py"
-Cohesion: 0.09
-Nodes (17): build_evidence(), evidence_fingerprint(), explain_evidence(), LearningMonitor, Read the authoritative file for EVERY call; never retain an expired key., Heartbeat counters are activity, not new learning or changed evidence quality., Isolated synthetic evidence tests, never performance evidence., Exercise the real SDK Runner and tool loop with a deterministic provider stub. (+9 more)
+Cohesion: 0.10
+Nodes (16): build_evidence(), evidence_fingerprint(), explain_evidence(), LearningMonitor, Read the authoritative file for EVERY call; never retain an expired key., Heartbeat counters are activity, not new learning or changed evidence quality., Isolated synthetic evidence tests, never performance evidence., Exercise the real SDK Runner and tool loop with a deterministic provider stub. (+8 more)
 
 ### Community 71 - "test_decision_review.py"
 Cohesion: 0.17
@@ -822,7 +817,7 @@ Nodes (12): 6.10 Use React DOM Resource Hints, 6.11 Use useTransition Over Manua
 
 ### Community 114 - "test_chart_terminal.py"
 Cohesion: 0.07
-Nodes (39): date, ChartReplay, Collapse received ticks within a second, preserving observed OHLC and late…, recorded_seconds(), chart_bars(), ChartTerminal, One observed contract per session; never sum overlapping expiries., Historical bars need continuous minutes; partial current bars stay labelled. (+31 more)
+Nodes (37): date, ChartReplay, Collapse received ticks within a second, preserving observed OHLC and late…, recorded_seconds(), chart_bars(), ChartTerminal, One observed contract per session; never sum overlapping expiries., Historical bars need continuous minutes; partial current bars stay labelled. (+29 more)
 
 ### Community 115 - "analyze_structure"
 Cohesion: 0.19
@@ -1117,12 +1112,12 @@ Cohesion: 0.20
 Nodes (9): 1. Eliminating Waterfalls (async), 2. Bundle Size Optimization (bundle), 3. Server-Side Performance (server), 4. Client-Side Data Fetching (client), 5. Re-render Optimization (rerender), 6. Rendering Performance (rendering), 7. JavaScript Performance (js), 8. Advanced Patterns (advanced) (+1 more)
 
 ### Community 206 - "paper_performance.py"
-Cohesion: 0.38
-Nodes (3): Closed-position attribution; counts are not causal proof of learning., summarize_paper_episodes(), test_closed_net_outcomes_are_attributed_without_counting_partial_fills_or_backtests()
+Cohesion: 0.28
+Nodes (4): Get current agent status for dashboard., Closed-position attribution; counts are not causal proof of learning., summarize_paper_episodes(), test_closed_net_outcomes_are_attributed_without_counting_partial_fills_or_backtests()
 
-### Community 209 - "now_ist"
-Cohesion: 0.18
-Nodes (11): Get current agent status for dashboard., download_index_candles(), main(), Download raw 5-year historical market data from Dhan directly into local…, Download continuous minute candles from Dhan in chunks with permanent SQLite…, download_futures_history(), main(), Retain missing index minute history for the terminal: python -m… (+3 more)
+### Community 209 - "download.py"
+Cohesion: 0.50
+Nodes (4): download_index_candles(), main(), Download raw 5-year historical market data from Dhan directly into local…, Download continuous minute candles from Dhan in chunks with permanent SQLite…
 
 ### Community 210 - "Paper strategy portfolio v1"
 Cohesion: 0.25
@@ -1145,8 +1140,8 @@ Cohesion: 0.33
 Nodes (7): Data, MarketContext(), number(), Data, rupees(), StrategyPortfolio(), time()
 
 ### Community 215 - "test_autonomous_paper.py"
-Cohesion: 0.08
-Nodes (36): eligibility(), investigation(), PaperResearchLearning, Paper approval requires both paths through the same archived account simulation., parametrize, Isolated evidence fixtures on E:; never imported by the running paper account., setup_engine(), test_autonomous_continuation_uses_declared_greek_freshness_policy() (+28 more)
+Cohesion: 0.11
+Nodes (30): eligibility(), test_cached_decision_expires_inside_same_minute(), test_candle_readiness_expires_without_relabelling_old_data_as_fresh(), parametrize, Isolated evidence fixtures on E:; never imported by the running paper account., setup_engine(), test_autonomous_continuation_uses_declared_greek_freshness_policy(), test_autonomous_downtrend_enters_and_exits_without_any_dhan_order() (+22 more)
 
 ### Community 216 - "React Best Practices"
 Cohesion: 0.33
@@ -1169,20 +1164,16 @@ Cohesion: 0.33
 Nodes (6): Entry rules, Greek and positioning evidence, Option-buying screen implementation — 26 September 2026, Replay and limitations, Verification completed 27 September 2026, shortly after midnight IST, Versioning and learning
 
 ### Community 223 - "json_safe"
-Cohesion: 0.44
-Nodes (9): dashboard(), health(), implementation_status(), learning_model(), readiness(), redacted(), strategies(), websocket() (+1 more)
+Cohesion: 0.26
+Nodes (13): dashboard(), health(), implementation_status(), learning_model(), readiness(), redacted(), strategies(), websocket() (+5 more)
 
 ### Community 224 - "Options Paper Lab"
 Cohesion: 0.20
 Nodes (10): Agent learning: what exists and what is not proved, Automatic operation and credential refresh, Chart replay and retained futures volume, Historical backtests: data, calculation and limitations, Optional Telegram paper alerts, Options Paper Lab, Paper execution, Principal endpoints (+2 more)
 
 ### Community 291 - "AutonomousPaperEngine"
-Cohesion: 0.27
-Nodes (3): AutonomousPaperEngine, agent_control(), agent_status()
-
-### Community 292 - "engine.py"
 Cohesion: 0.20
-Nodes (17): Chronological, shared-cash replay. Every position retains a fixed contract ID., historical_signals(), Causal portfolio-rule replay with the same seven-day warmup as the live scanner., add_features(), adx(), atr(), ema(), rsi() (+9 more)
+Nodes (5): AutonomousPaperEngine, agent_control(), agent_status(), last_report(), train_learning_model()
 
 ### Community 293 - "Coordinator and specialist review — 27 September 2026"
 Cohesion: 0.33
@@ -1206,7 +1197,7 @@ Nodes (13): _age(), assess_specialists(), Any, Auditable specialist evidence. No
 
 ### Community 299 - "plan_account"
 Cohesion: 0.11
-Nodes (27): BaseSettings, Settings, SimplePaperEngine, test_alive_worker_does_not_prove_a_stale_execution_loop_recovered(), test_automatic_recovery_isolates_failed_repairs_and_verifies_other_components(), test_exit_closed_by_other_worker_clears_stale_technical_errors(), test_unchanged_failed_repair_does_not_flood_durable_history(), test_empty_holiday_replay_does_not_touch_live_account_or_event_bus() (+19 more)
+Nodes (34): BaseSettings, Settings, SimplePaperEngine, test_alive_worker_does_not_prove_a_stale_execution_loop_recovered(), test_exit_closed_by_other_worker_clears_stale_technical_errors(), test_recorder_worker_recovers_without_removing_a_readiness_gate(), test_recovery_backoff_journal_and_restart_keep_actual_failures_visible(), test_unchanged_failed_repair_does_not_flood_durable_history() (+26 more)
 
 ### Community 300 - "install.sh"
 Cohesion: 0.29
@@ -1220,10 +1211,6 @@ Nodes (4): pipeline_from_events(), Any, test_pipeline_carries_event_provenance_f
 Cohesion: 0.47
 Nodes (8): account(), check(), parametrize, Controlled validation inputs only; never persisted as trading evidence., test_different_observed_no_trade_coverage_is_rejected(), test_malformed_or_estimated_evidence_cannot_promote(), test_omitting_trade_days_from_both_account_calendars_is_rejected(), test_reconciled_accounts_include_observed_no_trade_sessions()
 
-### Community 304 - "train_learning_model"
-Cohesion: 0.50
-Nodes (3): last_report(), latest_report(), train_learning_model()
-
 ### Community 305 - "12. Learning and activation"
 Cohesion: 0.40
 Nodes (5): 12. Learning and activation, Active autonomous paper research, Probability evidence, Separate legacy verified learning and review, Training and validation
@@ -1233,8 +1220,8 @@ Cohesion: 0.40
 Nodes (5): 16. Run and verification commands, Explicit chart backfill, Verification, Windows CMD — backend, Windows CMD — frontend
 
 ### Community 307 - "datetime"
-Cohesion: 0.18
-Nodes (12): datetime, Paper research coordinator. Execution belongs exclusively to the portfolio…, Replay captured inputs through the active autonomous paper engine, without…, Broker-sourced charges and empirical expectancy; no invented fee percentages., Evidence monitor. No order, training, parameter-edit or promotion tools., Paper-only research learning. Estimated charges never become verified evidence., Three paper hypotheses, one selector, one atomic portfolio authority., One completed-bar trend rule feeding the existing virtual paper broker. (+4 more)
+Cohesion: 0.13
+Nodes (20): datetime, Paper research coordinator. Execution belongs exclusively to the portfolio…, Replay captured inputs through the active autonomous paper engine, without…, Broker-sourced charges and empirical expectancy; no invented fee percentages., Evidence monitor. No order, training, parameter-edit or promotion tools., net_economics(), Observed option-buying filters. Preferences are hypotheses, not probabilities., One spread reserve at the adverse exit, plus round-trip charges once. (+12 more)
 
 ### Community 308 - "paper_service.py"
 Cohesion: 0.33
@@ -1272,29 +1259,29 @@ Nodes (3): 9. Context, support/resistance and sweeps, Advisory market context, M
 Cohesion: 0.39
 Nodes (6): audit_observation_db(), main(), Audit recorded option observations without overstating historical coverage., Return a bounded, reproducible audit of a QuoteRecorder SQLite database., test_audit_rejects_non_recorder_database(), test_audit_reports_observations_without_claiming_replay_eligibility()
 
-### Community 317 - "session_state"
-Cohesion: 0.20
-Nodes (12): Read-only visual replay from retained candles and received market observations., timestamp(), Read-only terminal projection. No broker requests, fills, or forecast authority., calendar_info(), Published NSE derivatives closures used as a shared portfolio entry gate. This…, session_state(), test_calendar_does_not_claim_unknown_year_or_complete_bse_coverage(), test_published_holiday_prevents_regular_entries() (+4 more)
+### Community 317 - "now_ist"
+Cohesion: 0.11
+Nodes (21): download_futures_history(), main(), Retain missing index minute history for the terminal: python -m…, Read-only visual replay from retained candles and received market observations., timestamp(), Read-only terminal projection. No broker requests, fills, or forecast authority., calendar_info(), Published NSE derivatives closures used as a shared portfolio entry gate. This… (+13 more)
 
 ### Community 318 - "local_mutations"
 Cohesion: 0.67
 Nodes (3): middleware, Request, local_mutations()
 
-### Community 319 - "Path"
-Cohesion: 0.23
-Nodes (11): Path, main(), Read one row per exact option contract/minute, with repeated underlying OHLCV., read_contract_csv(), main(), Rebuild research labels from a saved report and its local exact-contract CSV.…, rebuild(), Disjoint session windows, not a row slice that splits concurrent indices. (+3 more)
+### Community 319 - "jobs.py"
+Cohesion: 0.08
+Nodes (30): Path, main(), dataset_path(), Read one row per exact option contract/minute, with repeated underlying OHLCV., read_contract_csv(), BacktestJobs, before_commit(), cancelled() (+22 more)
 
 ### Community 320 - "test_candle_recovery.py"
 Cohesion: 0.33
 Nodes (8): gateway(), candles(), test_current_session_refetch_repairs_gap_and_publishes_before_chain(), chain(), test_future_candles_are_not_published(), test_new_generation_response_is_not_published_under_old_generation(), candles(), test_unresolved_gap_stays_blocked_and_repair_is_rate_limited()
 
 ### Community 322 - "test_reconstruction.py"
-Cohesion: 0.09
-Nodes (27): merge_series(), Quarantine conflicting duplicate candles permanently, independent of fetch…, ResearchReplay, outcome_lessons(), Observed associations and hypotheses; not causal proof or deployed policies., Isolated fixture prices: never imported by application runtime., run_fixture(), signal() (+19 more)
+Cohesion: 0.08
+Nodes (33): estimate_gap_exit(), Exploratory missing-price liquidation; never an observed candle or live fill., Use only the preceding minute, then liquidate instead of inventing a path., merge_series(), Quarantine conflicting duplicate candles permanently, independent of fetch…, ResearchReplay, outcome_lessons(), Observed associations and hypotheses; not causal proof or deployed policies. (+25 more)
 
-### Community 323 - "report_from_run"
-Cohesion: 0.17
-Nodes (15): estimate_gap_exit(), Exploratory missing-price liquidation; never an observed candle or live fill., Use only the preceding minute, then liquidate instead of inventing a path., history_row(), Read models for reports: retain audit data without presenting partial profit as…, report_view(), attribution(), report_from_run() (+7 more)
+### Community 323 - "report_view"
+Cohesion: 0.42
+Nodes (7): history_row(), Read models for reports: retain audit data without presenting partial profit as…, report_view(), test_estimated_fee_replay_is_visible_but_never_verified(), test_completed_net_scenario_and_legacy_assumption_are_explicit(), test_partial_net_report_never_gets_complete_performance_label(), test_synthetic_gross_series_and_metrics_are_quarantined()
 
 ### Community 327 - "test_supervisor_timeout_restarts_only_owned_api_then_verifies_new_workers"
 Cohesion: 0.12
@@ -1303,20 +1290,20 @@ Nodes (5): test_dead_worker_restarts_once_and_shutdown_never_restarts(), start()
 ## Knowledge Gaps
 - **1103 isolated node(s):** `install.sh script`, `TMPDIR`, `TMP`, `TEMP`, `PIP_CACHE_DIR` (+1098 more)
   These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 1648 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
-- **84 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **86 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `Getting Started` connect `Getting Started` to `DhanHQ API Documentation — Full Export`, `Binary Response`, `Order Management`, `Deploy Your First Strategy`, `Market Data`, `Modify Order`, `Modify Conditional Order`, `Modify Order`, `Modify Super Order`, `Response Structure`, `Authentication APIs`, `Version 2.0`, `Cancel Order`, `Conditional and Multi Order`, `Consume Consent`, `Consume Consent`, `Portfolio`, `EDIS Status Inquiry`, `Get Intraday Historical Data`, `Ledger Report`, `Get Order by Correlation ID`, `Get Order by ID`, `Trade History`, `Get Trades for Order`, `Get Order by ID`, `Get Past Trades by Security Id`, `Margin Calculator`, `Order Estimator`, `Place Order`, `Manage Kill Switch`, `Place Order`, `Place Super Order`, `Slice Order`, `Generate Consent`, `Generate eDIS Form`, `Get Daily Historical Data`, `Historical Rolling Options Data`, `Get Expiry List`, `Access for Individual Traders`, `Access Token Setup`, `Supported Agents`, `Version 2.2`, `Super Order`, `Common Error Scenarios`, `Connect Your Dhan Account`, `EDIS Status & Inquiry`, `Lot Size Validation`, `Kill Switch Status`, `Get LTP`, `Get OHLC`, `Get Option Chain`, `Get Order Book`, `Get Positions`, `Get Full Quote`, `Get Super Orders`, `Get Trade Book`, `Get Fund Limit`, `Get Holdings`, `Get Market Status`, `Get Order Book`, `Get Past Trades`, `Place Conditional Order`, `Place Multi Order`, `Generate Token`, `Modify IP`, `Generate Consent`, `Renew Token`, `Set IP`, `Generate T-PIN`, `Get Conditional Order by ID`, `Get Fund Limits`, `Get Holdings`, `Example Workflows`, `Supported Values`, `Funds`, `Market Data`, `Order Update`, `Establishing Connection`, `Adding Instruments`, `API Structure`, `Handling Rate Limits`, `Version 2.4`, `Install`, `Indian Stocks`, `Historical Data`, `Request Messages`, `Establishing Connection`, `Order Confirmation`, `Get P&L Based Exit`, `Stop P&L Based Exit`, `Get IP`, `Exit All Positions`, `Get All Conditional Orders`, `Feed Disconnect`, `Option Chain`, `Get P&L Based Exit`, `Historical Rolling Data`, `LIMIT Order Defaults`, `Setup TOTP`, `Version 2.5`, `Version 2.1`, `Structure`, `Trade History`, `Global Stocks`, `Feed Disconnect`, `For Partners`, `Version 2.3`, `Setting Up Postback`?**
   _High betweenness centrality (0.073) - this node is a cross-community bridge._
-- **Why does `Store` connect `Store` to `DhanGateway`, `test_market_context.py`, `PlanRiskPolicy`, `AutonomousTradingAgent`, `test_jobs.py`, `main.py`, `test_dhan_observations.py`, `test_runtime.py`, `audit_individual_agents`, `test_forward_comparison.py`, `ValueError`, `contract`, `CostModel`, `plan_account`, `datetime`, `LearningService`, `test_backtest.py`, `test_automatic_recovery.py`, `Path`, `test_option_chain_cache_retains_original_observation_time`, `report_from_run`, `test_reconstruction.py`, `test_learning_monitor.py`, `test_supervisor_timeout_restarts_only_owned_api_then_verifies_new_workers`, `test_decision_review.py`, `now_ist`, `mode`, `test_chart_terminal.py`?**
-  _High betweenness centrality (0.042) - this node is a cross-community bridge._
-- **Why does `now_ist()` connect `now_ist` to `PaperEngine`, `DhanGateway`, `AutonomousTradingAgent`, `main.py`, `QuoteRecorder`, `local_time`, `ForwardComparison`, `Store`, `test_forward_comparison.py`, `post`, `MultiStrategyPaperEngine`, `MLTradeQualityModel`, `PaperBroker`, `train_learning_model`, `datetime`, `ai.py`, `LearningService`, `session_state`, `test_backtest.py`, `test_automatic_recovery.py`, `test_learning_monitor.py`, `json_safe`, `test_chart_terminal.py`?**
+- **Why does `Store` connect `Store` to `DhanGateway`, `test_market_context.py`, `PlanRiskPolicy`, `AutonomousTradingAgent`, `test_jobs.py`, `main.py`, `DhanMarketData`, `test_dhan_observations.py`, `audit_individual_agents`, `local_time`, `ValueError`, `contract`, `CostModel`, `plan_account`, `datetime`, `LearningService`, `now_ist`, `test_backtest.py`, `test_automatic_recovery.py`, `jobs.py`, `test_reconstruction.py`, `test_option_chain_cache_retains_original_observation_time`, `test_learning_monitor.py`, `test_supervisor_timeout_restarts_only_owned_api_then_verifies_new_workers`, `test_decision_review.py`, `download.py`, `mode`, `test_chart_terminal.py`?**
+  _High betweenness centrality (0.043) - this node is a cross-community bridge._
+- **Why does `now_ist()` connect `now_ist` to `PaperEngine`, `DhanGateway`, `AutonomousTradingAgent`, `main.py`, `QuoteRecorder`, `ForwardComparison`, `Store`, `local_time`, `post`, `MultiStrategyPaperEngine`, `AutonomousPaperEngine`, `MLTradeQualityModel`, `PaperBroker`, `datetime`, `ai.py`, `LearningService`, `test_backtest.py`, `test_learning_monitor.py`, `paper_performance.py`, `download.py`, `json_safe`, `test_chart_terminal.py`?**
   _High betweenness centrality (0.020) - this node is a cross-community bridge._
 - **Are the 6 inferred relationships involving `Store` (e.g. with `AutonomousTradingAgent` and `test_incomplete_or_estimated_reports_do_not_fit_models()`) actually correct?**
   _`Store` has 6 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 3 inferred relationships involving `Settings` (e.g. with `test_token_renewal_never_interrupts_entries_or_held_position()` and `gateway_fixture()`) actually correct?**
+- **Are the 3 inferred relationships involving `Settings` (e.g. with `test_manually_managed_token_is_never_renewed_by_feed_watch()` and `gateway_fixture()`) actually correct?**
   _`Settings` has 3 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `install.sh script`, `TMPDIR`, `TMP` to the rest of the system?**
   _1103 weakly-connected nodes found - possible documentation gaps or missing edges._

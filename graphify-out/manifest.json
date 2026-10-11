@@ -204,9 +204,9 @@
     "semantic_hash": "499999fc6ad2f95e88fe8f94c554d089"
   },
   "Trading Bot/backend/app/paper_engine.py": {
-    "mtime": 1791392168.2314458,
-    "seen": 1791393336.8536603,
-    "ast_hash": "cfd27d23a7b49142d80a1f72e0e228ed",
+    "mtime": 1791518052.4412992,
+    "seen": 1791518146.8296254,
+    "ast_hash": "39f918da59d0b4daa4f12964ea250928",
     "semantic_hash": ""
   },
   "Trading Bot/backend/app/paper_performance.py": {
@@ -438,9 +438,9 @@
     "semantic_hash": ""
   },
   "Trading Bot/backend/tests/test_runtime.py": {
-    "mtime": 1791369861.6841042,
-    "seen": 1791370028.8919685,
-    "ast_hash": "ac3b4860ac0f76961a9051107e14d9f4",
+    "mtime": 1791518052.443295,
+    "seen": 1791518146.8296254,
+    "ast_hash": "7b822bc9b346b4b8ccc6ca6a612562cc",
     "semantic_hash": ""
   },
   "Trading Bot/backend/tests/test_specialist_agents.py": {
@@ -1602,9 +1602,9 @@
     "semantic_hash": ""
   },
   "Trading Bot/backend/tests/test_automatic_recovery.py": {
-    "mtime": 1791392728.9772396,
-    "seen": 1791393336.8536603,
-    "ast_hash": "8f69986ba3089c5aa070317a5811bcb0",
+    "mtime": 1791518052.4423096,
+    "seen": 1791518146.8296254,
+    "ast_hash": "9c5e4eb48054e8cdc8a03e56b0006159",
     "semantic_hash": ""
   }
 }
