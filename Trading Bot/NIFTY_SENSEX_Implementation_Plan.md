@@ -1,10 +1,28 @@
 # NIFTY and SENSEX paper-trading system — implementation and operating plan
 
-Updated: **2 October 2026**. All times are **Asia/Kolkata (IST)**. Project root: `E:\trading_bot_full`. Application root: `E:\trading_bot_full\Trading Bot`.
+Updated: **13 October 2026**. Source/configuration review: **12:14 pm IST**. All times are **Asia/Kolkata (IST)**. Project root: `E:\trading_bot_full`. Application root: `E:\trading_bot_full\Trading Bot`.
 
 This is the consolidated specification of the implementation on disk, its observed deployment, evidence limits and remaining work. It replaces the accumulated update notes previously in this file. A feature being implemented, a test passing, a worker running and a strategy having a profitable edge are four different claims.
 
 **Scope:** autonomous local paper buying of NIFTY and SENSEX options, one shared account, four competing setup hypotheses, causal multi-timeframe structure, the full returned option chain, dynamic position management, archived-input replay and guarded paper research learning. `PAPER_STRATEGY_MODE=autonomous` selects this implementation. The user does not choose a strategy or approve each paper trade. Real-money orders and autonomous code rewriting remain disabled.
+
+## Current implementation at a glance
+
+This is the single master implementation document. Read it top to bottom for the current design, actual behavior, source ownership, operating instructions, validation and open gaps. Executable code remains modular; this file does not replace it. Older companion documents are historical references, not required reading for the operating contract below.
+
+| Area | Current status |
+| --- | --- |
+| Trading authority | Autonomous paper only; live orders disabled |
+| Shared capital / position cap | ₹30,000 / one position across both indices |
+| Risk | ₹650 per lot, capped by remaining ₹1,000 planned daily allocation; ₹200 reserve and ₹1,200 hard halt |
+| Active strategies | Four deterministic setup hypotheses; not an unrestricted AI inventing strategies |
+| User's latest reward/risk requirement | At least 1:2 **net after costs** |
+| Actual reward/risk admission | Current `MIN_NET_REWARD_RISK` is **1.0**; nominal premium target is 2R before costs. Strict net 2R is **not yet enforced by the current configuration** |
+| Credentials | Manually supplied; automatic generation/renewal disabled |
+| Token-update form | Implemented and local HTTP behavior tested; saves only on explicit user submission after Dhan validation |
+| Phone token updates | Tailscale integration prepared; installation, sign-in and real remote verification still pending |
+| 13 October 12:14 pm runtime snapshot | Service responds in paper mode but is degraded by DH-901; no open positions |
+| Performance evidence | Unvalidated paper research; no established profitable edge or guaranteed monthly return |
 
 ## Contents
 
@@ -101,7 +119,7 @@ This is a responsibility map, not proof that all inputs exist or every candidate
 | `TelegramNotifier` | Asynchronous notifications, no execution authority |
 | FastAPI / React | Local APIs and presentation; browser is not the trading engine |
 
-Autonomous mode has twelve engine workers: `paper-nifty`, `paper-sensex`, `paper-quotes`, `paper-engine`, `paper-feedback`, `paper-feed-watch`, `paper-selector`, `paper-protection`, `paper-protection-preparation`, `paper-context`, `paper-position-manager` and `paper-research-learning`. Feed, recorders and Telegram have additional workers. The preparation worker cannot override the protective worker. Worker count is not independent trading-agent count; the fourteen displayed specialist roles are recorded responsibilities.
+Autonomous mode exposes thirteen engine workers: `paper-nifty`, `paper-sensex`, `paper-quotes`, `paper-engine`, `paper-feedback`, `paper-feed-watch`, `paper-selector`, `paper-protection`, `paper-protection-preparation`, separate `paper-context-nifty` and `paper-context-sensex`, `paper-position-manager` and `paper-research-learning`. Verify the runtime worker list rather than treating a historical worker count as a health guarantee. Feed, recorders and Telegram have additional workers. The preparation worker cannot override the protective worker. Worker count is not independent trading-agent count; the fourteen displayed specialist roles are recorded responsibilities.
 
 ## 3. Session lifecycle and credentials
 
@@ -121,6 +139,35 @@ Calendar source currently covers 2026 NSE derivatives closures as a shared portf
 09:15 starts monitoring, not immediate trading. Portfolio evaluation needs at least 20 completed session minute bars; range rejection needs at least 32. Opening-range retest and confirmation may delay entry further.
 
 `Trading Bot/.env` is authoritative for `DHAN_CLIENT_ID` and `DHAN_ACCESS_TOKEN`. Credential-sensitive work checks for replacements; changes rebuild REST clients, advance generation, reconnect the feed and discard stale quotes. Old-generation results cannot authorise entry. For DH-901, inspect file freshness and runtime generations without exposing secrets. Configured credentials are not proof of provider acceptance. This reload mechanism does not imply automatic Telegram or risk-setting reload.
+
+### Credential ownership and explicit token update
+
+The user manages credentials. The assistant and running service must never autonomously edit `.env`, generate a token or call token renewal. `renew_project_token` remains a dormant utility in the source, but the feed watcher no longer calls it. A future maintainer must not reconnect it without explicit user authorization. The current health output reports `management: MANUAL` and `automatic_renewal: false`.
+
+The only authorized write exception is the user pressing **Verify and save token** in the new token form. It may replace only `DHAN_ACCESS_TOKEN` after Dhan's read-only `/profile` accepts the submitted token for the configured client. It cannot alter client ID, risk, Telegram or live-order settings. Ordinary manual edits remain supported.
+
+Local procedure:
+
+1. Open the dashboard at `http://127.0.0.1:5174/#charts` and choose **Update Dhan token**, or open `http://127.0.0.1:8080/api/credentials/form` directly.
+2. Generate a token yourself through Dhan, paste it into the masked field and press **Verify and save token**.
+3. Validation failure leaves the file unchanged. Successful save is atomic; a detected concurrent file edit aborts the write.
+4. The existing watcher reloads REST and WebSocket credentials. Verify provider acceptance, new runtime generation and fresh market data separately. A saved token is not entry approval.
+
+The form never prefills the old token, uses no browser token storage, clears its field on submit/page exit, and sends the token only in a JSON POST body. Responses are marked no-store; form framing and unrelated script/resource loads are blocked. Validation errors are generic and do not echo token input. Token requests require a loopback peer and trusted browser origin, or the configured private proxy identity and HTTPS origin. This protects the supported route, not a compromised desktop or phone. Do not paste credentials into chat, URLs, logs or screenshots.
+
+### Private phone access: prepared, not yet operational
+
+Tailscale Serve was selected by the user. A masked page alone does not provide remote access or authenticate a remote user. The signed official Windows installer is downloaded under `E:\trading_bot_full\.tools\tailscale\tailscale-setup.msi`. The current execution session is not a Windows administrator; Tailscale installation and sign-in have not been completed.
+
+To finish:
+
+1. A Windows administrator installs Tailscale. Keep project-managed installation/state/log destinations on E:. The MSI exposes `INSTALLDIR`, `ServiceStateDirectory` and `UserStateDirectory`; actual runtime locations must also be verified after installation. Windows networking components are system-managed.
+2. Sign in on desktop and phone with the same personal Tailscale account. Do not provide passwords or auth keys through chat.
+3. Run `backend/enable_private_token_access.ps1 -Tailscale <installed tailscale.exe path>` from PowerShell. The helper requires an already signed-in user-owned desktop and a `.ts.net` hostname.
+4. It writes only hostname and allowed login into gitignored `backend/token_access.json`, then requests private HTTPS Serve on port 443 targeting loopback port 8080. Follow Tailscale's HTTPS enablement link if required, then rerun.
+5. Open the printed `https://<desktop>.ts.net/api/credentials/form` on the connected phone. Verify another identity is rejected, a token save reloads the bot, and other API paths are denied through that private hostname.
+
+The backend accepts that configured Tailscale user identity and exact hostname; remote non-token API paths are blocked. It must remain bound to loopback with `--no-proxy-headers` so forwarded addresses cannot replace the peer used by authorization. No Funnel, router port forwarding, public token endpoint or paid deployment has been enabled. The desktop must be awake and connected. Phone access is not complete until this full path is tested.
 
 ## 4. Data acquisition and retention
 
@@ -164,7 +211,9 @@ TREND_UP/DOWN prefer pullback, continuation, then ORB; RANGE prefers rejection; 
 
 Ranking considers supported matching net evidence/strength, regime preference, net target reward/all-in risk, spread and stable tie-breakers. It is not profit probability. Sufficient nonpositive evidence can veto entry. Insufficient evidence is allowed only in authorised unvalidated paper-observation mode.
 
-A downtrend alone is not a PUT entry. Timely setup, eligible contract, protection candle and affordable risk are still required. A whole no-trade day is valid.
+A downtrend alone is not a PUT entry. Timely setup, eligible contract, protection candle and affordable risk are still required. A whole no-trade day is valid only as a strategy outcome when operational/data coverage supports that conclusion.
+
+For trend continuation, a CALL candidate requires ADX ≥20, EMA9 above EMA21, close above EMA9 and the previous completed candle high. A PUT candidate requires ADX ≥20, EMA9 below EMA21, close below EMA9 and the previous completed candle low. Autonomous policy additionally checks EMA21 slope, regime consistency and bounded extension. These are one-minute features. A manual five-minute Dhan chart using EMA9/21 (source Close, offset 0) is useful context but will not match the bot candle for candle. Optional EMA50 is context, not a newly added admission rule. Flat/intertwined EMAs, contradictory structure or insufficient target room can prevent an entry. Every candidate still passes the full chain, contract, protection and broker gates.
 
 ## 6. Contract selection and sizing
 
@@ -189,6 +238,28 @@ This is a logical dependency order; evidence can be prepared asynchronously. App
 Autonomous protection requires the exact selected contract's completed signal/retest-minute candle and at least fourteen causal contract bars for option ATR. The stop respects that candle's low and a minimum observed option-ATR distance; it is not a hardcoded percentage. Live day-low metadata cannot overwrite this candle. Never tighten a stop to fit the risk allowance. Reject any quantity exceeding its ₹650-per-lot ceiling or the remaining daily allocation.
 
 Before entry, the nominal 2R premium target must have room before the nearest already-confirmed higher-timeframe obstacle. The observed Delta maps premium distance to an approximate index move; this is explicitly a local sensitivity approximation. A range midpoint must also offer enough room. The target is never extended or the stop reduced merely to pass the gate.
+
+### Latest requirement: 1:2 net reward/risk and the implementation gap
+
+The user's latest requirement is **risk one rupee to target at least two rupees net**, after estimated costs. This is an entry-planning objective, not a guarantee that every exit earns 2R.
+
+The actual `net_economics` implementation currently calculates:
+
+```text
+spread reserve = (entry ask − observed bid) × quantity
+all-in planned risk = (entry − stop) × quantity + spread reserve + stop-side round-trip charges
+net target reward = (target − entry) × quantity − target-side round-trip charges
+net reward/risk = net target reward / all-in planned risk
+strict_2r_pass = net reward/risk >= 2
+```
+
+The broker rechecks this ratio atomically against its configured minimum. Source default and the non-secret effective setting inspected on 13 October are **1.0**, so merely recording `strict_2r_pass` does not enforce the latest requirement. Current target planning uses nominal 2R premium distance; costs normally reduce the resulting net ratio. This documentation update does not change `.env` or trading code and must not be described as implementing strict net 2R.
+
+Required completion: enforce at least 2.0 in final admission as well as candidate sizing/review; confirm a plausible cost-adjusted target has room before structure; reject trades without that room. Never reduce structural stop distance, increase the daily budget or extend a target unrealistically just to pass. Test candidates that pass gross 2R but fail net 2R, multiple lots, fee changes during admission and limited target room. User-controlled `.env` ownership remains in force.
+
+Illustration only: entry ₹100, stop ₹90, hypothetical quantity 50 and ₹60 stop-side costs give ₹560 risk before any extra spread reserve. A ₹120 target with ₹60 target-side costs yields ₹940 net, a ratio of 1.68. A ₹123.60 target yields ₹1,120 net, or 2.0, only under those assumptions and zero additional spread reserve. Use actual contract quantity/tick and recalculated costs, not this illustrative quantity.
+
+Delta is only a local premium sensitivity approximation. Actual/replayed option P&L must use the same identified contract's admissible entry/exit premiums and charges. The earlier illustrative −₹640 based on assumed delta/quantity is withdrawn as a reported daily virtual result. Index invalidation being touched proves neither the option fill price nor its rupee loss.
 
 ### Sizing: risk-sized-whole-lots-v3-per-lot
 
@@ -551,42 +622,39 @@ Use `--strategy orb_retest`, `trend_pullback` or `range_rejection` for individua
 
 Dependencies constrain Pandas below 3 and NumPy below 2.5. Validated installed pair: Pandas 2.3.3 / NumPy 2.4.6. This addresses observed generic-timedelta warnings with NumPy 2.5; no warning filter hides them.
 
-## 17. Validation/deployment snapshot
+## 17. Validation, deployment and session evidence
 
-These are dated observations, not evergreen guarantees.
+### Current review: 13 October 2026
 
-| Check on 2 October 2026 | Result |
-| --- | --- |
-| Full backend suite | 442 passed in 703.62 seconds; no warnings reported |
-| Backtest job integration | 20 passed, including three new checks for the autonomous archive source, durable report saving and rejection of incompatible inputs |
-| Autonomous execution/research checks | 25 passed: PUT admission and observed exit, causal features, independent protection, missing-quote liquidation/restart, serial training and independent replay approval |
-| Final replay/fee/job checks | 29 passed in 30.37 seconds after the replay history correction; includes primary-ledger isolation, completed replay recovery and preservation of data waits after a setup expires |
-| Frontend suite | 27 passed |
-| Production frontend build | Passed |
-| Browser verification | Current autonomous dashboard and saved replay verified; corrected archive coverage labels and earlier blockers are visible; no console errors observed in the final page check |
-| Recovery tests | Missing depth, credential replacement, reconstruction, reconnect, partial liquidation and duplicate-quote rejection passed using isolated simulated input |
-| Graphify | JSON/HTML/report regenerated; 2,958 nodes, 5,754 edges and 308 communities in this AST update |
+Non-secret effective settings inspected: autonomous mode, ₹30,000 capital, ₹650 per-lot risk, ₹1,000 planned daily allocation, ₹1,200 hard halt, one open position and **minimum net reward/risk 1.0**. Credentials were not printed or edited. At approximately 12:14 pm IST the API responded but reported `degraded`, `ENTRY_WINDOW`, `DH-901 Invalid_Authentication` and no open positions. This is a dated observation, not permanent runtime state. A healthy pre-open process check cannot establish active-session provider authentication.
 
-Graphify reported partial extraction near `frontend/src/main.tsx`; TypeScript/Vite build passed. Graph extraction is not compilation; passing tests are not profit evidence.
+Automatic renewal was removed from the feed watcher on 9 October. The manual reload/worker suites passed **91 tests** at that change. The token-form change on 13 October passed **11 targeted tests** and the TypeScript/Vite production build. Live local checks confirmed form HTTP 200, masked input/no-store, malformed token HTTP 400, missing-origin HTTP 403 and unconfigured remote-host HTTP 403. No real token submission was made; the production `.env` hash and modification time remained unchanged across verification. The backend was restarted under its supervisor with `--no-proxy-headers` while the account was flat.
 
-**Running deployment on 2 October:** the backend reports `autonomous_paper`, twelve live engine workers, no operational/advisory errors and no open position. The session is `HOLIDAY` (Mahatma Gandhi Jayanti). The existing account remains ₹30,335.47 cash with four earlier completed fills and ₹335.47 cumulative recorded net P&L; these are legacy-policy results, not evidence for the newly activated policy. No active paper filter is deployed. All four legacy episodes lack causal entry features and are excluded from training; they remain available for outcome investigation. Null legacy features are now handled without stopping the learner.
+These are scoped checks, not a claim that every test in the current tree was rerun or that phone access was tested. Tailscale's installer signature was verified, but administrator installation, both-device sign-in and a real phone-to-desktop request remain pending. No remote URL is operational yet.
 
-The public autonomous replay job now accepts `source="observed"`, starts the shared engine replay and saves its report. The dashboard visibly shows active-policy setup selection, position management, evidence counts and the ₹18,000 monthly reporting objective. Windows Task Scheduler has an enabled `Options Paper Lab Supervisor` task with a 09:10 IST trigger; its single supervisor restarts the API after an exit. Do not start a competing API during supervisor recovery.
+### Session failures and evidence limits
 
-**Completed October 1 archive replay:** run `6f7284e3-3406-4f76-a079-544f91aab509` finished on October 2 with 62 candidate setups, zero simulated fills, zero unresolved positions and ₹0 recorded replay net P&L. It remains `research_partial` / `research_net`, ineligible for learning or challenger approval. All 62 candidates encountered data gaps; 60 encountered unavailable selected-contract candle responses, while 30 encountered stale 45-second Greeks (overlapping groups). The archive begins at 09:31:44 IST and lacks the active-policy capture marker. This cannot establish how the new policy would have performed with complete opening-session and contract data.
+- **8 October:** a token with a future recorded expiry was rejected by Dhan REST. Before automatic renewal was disabled, renewal attempts occurred. Available retained status does not prove whether an earlier renewal succeeded but failed to persist, or whether rejection originated independently. Do not present an unproved cause as established.
+- **9 October:** replacement credentials were accepted and fresh data recovered. Candidates encountered confirmed five-minute-zone target-room rejections, selected-contract protection-candle waits and intermittent candle/chain/feed gaps. Repeated checks are not distinct missed trades. Current health cannot erase those historical gaps.
+- **12 October:** zero recorded primary paper trades and ₹0 recorded daily P&L. Windows recorded a low-power interval from about **10:30:57 am to 9:03:46 pm IST**. Only six daily decision events were found, starting after 9:04 pm. No saved decisions established successful opening-session evaluation from 09:15 to 10:30. Sleep explains the later outage, not the earlier evidence gap. Hypothetical index candidates are not admitted option trades, and the full-day virtual option P&L was not established.
 
-The final opportunity states show 47 expired setups and 15 Greek-related waits. These states previously obscured earlier contract-data waits. Replay reports now preserve `decision_blockers` with first/last timestamps, checks by index and distinct data-blocked candidate counts. Historical data waits on candidates that never filled keep a report partial after the candidate expires. Repeated checks are explicitly labelled as checks, never trades or independent samples. A normal setup rejection alone does not create a data-quality failure. The full-report UI handles autonomous session coverage instead of rendering undefined historical-request fields.
+A supervisor cannot trade while the operating system sleeps. Interactive-logon tasks, wake settings and a successful early-morning check do not prove all-day operation. Continuous coverage, machine power, network availability, session heartbeats and decision capture need separate verification.
 
-The original replay `report.json` and isolated account remain preserved under `data/autonomous_replays/e55739660be54199b9147be1a9d2a6ac/`. `diagnostics.json` and `VALIDATION.md` document an additive audit of retained events. The saved dashboard report includes that audit without recalculating inputs, trades, performance or policy settings. Missing historical inputs were not generated or filled with averages.
+### Retained historical research
 
-The final controlled reload preserved the flat primary account and restored all twelve workers with no runtime errors. The Windows scheduled task reports `Ready`; a separate supervisor process is running. The next weekday trigger is October 5 at 09:10 IST. The full suite passed before the last reporting changes; the 29 focused backend checks and final frontend tests/build cover those final changes. These counts are not a claim that a new full-suite run of every final-tree test was performed.
+The October 1 archive replay completed on October 2: 62 candidates, zero fills, zero unresolved positions and ₹0 recorded replay net. It remained partial research, ineligible for learning/promotion: input coverage began at 09:31:44 and all candidates encountered gaps. Selected-contract candle and Greek gaps overlapped. This is not evidence that a fully observed day had no tradable setups.
 
-Tests use controlled packets and E-drive temporary databases. They establish tested behaviour, not real provider continuity, exchange fills or profitable forward performance. Dhan accepted the current project credentials in a read-only expiry-list check. The token's recorded expiry is 3 October 2026 at 11:49:10 IST; replace it in the project `.env` before the next market session. The running REST client and WebSocket check that file for replacements. Authenticated access does not reconstruct missing historical quotes.
+Original artifacts remain under `data/autonomous_replays/e55739660be54199b9147be1a9d2a6ac/`; the retained job ID is `6f7284e3-3406-4f76-a079-544f91aab509`. Legacy four-fill cumulative ₹335.47 net figures belong to earlier policy/account records, not demonstrated profitability of current autonomous execution. Historical test totals and token expiry dates from October 2 are historical records, not current readiness claims.
+
+No sustained profitable forward result, guaranteed daily/monthly return, calibrated directional probability or live-performance validation is established by these checks.
 
 ## 18. Remaining work and acceptance criteria
 
 | Priority | Gap | Completion evidence |
 | --- | --- | --- |
+| P0 | Strict net 1:2 admission | Current minimum is 1.0; enforce/test the requested 2.0 floor throughout review, sizing and final broker admission without changing risk or fabricating target room |
+| P0 | Phone credential access | Complete administrator Tailscale install, same-account sign-in, exact identity/HTTPS configuration and real phone-to-desktop save/reload/rejection tests |
+| P0 | Awake-host and opening coverage | Resolve missing opening-session decisions, record continuous heartbeat/coverage, test sleep/resume and unattended startup; do not infer no-signal from missing records |
 | P0 | Fresh market-day operation | Observe pre-open through 15:35, data ages, rotation/reconnect, no-trade reasons and pending exits; never force a trade |
 | P0 | Calendar coverage | Independent NSE/BSE manifests, special sessions and supported future years |
 | P1 | Full autonomous archive coverage | Shared runtime/replay policy is implemented; collect complete index/depth/API receipts and dated identities for a market day. The retained October 1 legacy index observations begin at 09:31:44, missing the opening sixteen minutes; its full-day result must remain partial |
@@ -612,6 +680,7 @@ Paths below are relative to `Trading Bot/` unless noted. Companion documents can
 | Concern | Primary source files |
 | --- | --- |
 | Configuration | `backend/app/config.py` |
+| User-controlled token updates | `backend/app/token_update.py`, `backend/app/token_update.html`, `backend/enable_private_token_access.ps1`, `backend/tests/test_token_update.py` |
 | Sessions/calendar | `backend/app/session.py`, `backend/app/market_calendar.py` |
 | Data/archive | `backend/app/market_data.py`, `backend/app/quote_recorder.py`, `backend/app/dhan_observations.py` |
 | Autonomous policy/selection | `backend/app/autonomous_policy.py`, `backend/app/autonomous_paper.py`, `backend/app/strategy_portfolio.py`, `backend/app/portfolio_engine.py` |
