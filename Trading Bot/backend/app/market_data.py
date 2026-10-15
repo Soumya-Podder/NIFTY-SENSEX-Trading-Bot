@@ -70,6 +70,8 @@ class DhanMarketData:
         self.option_quotes={}
         self.credential_generation=0
         self.last_packet_at=None
+        self.packet_errors=0
+        self.last_packet_error=None
         self.recent_market_events=deque(maxlen=512)
         self.reconfigure_lock=threading.RLock()
         self.recorder=None
@@ -331,68 +333,79 @@ class DhanMarketData:
         if self.stopping.is_set() or (_feed is not None and _feed is not self.feed): return
         packets = payload if isinstance(payload, list) else [payload]
         for packet in packets:
-            if not isinstance(packet, dict):
-                continue
-            security_id = str(packet.get("security_id", ""))
-            received=datetime.now(timezone.utc).isoformat()
-            self.last_packet_at=received
-            key=(int(packet.get("exchange_segment",0)),security_id)
-            with self.lock: contract=self.option_contracts.get(key)
-            if contract and packet.get("type")=="Full Data":
-                ordering=self._packet_order(key,packet,received)
-                if ordering["ordering_rejected"]: continue
-                depth=packet.get("depth") or []
-                bids=[d for d in depth if float(d.get("bid_price",0))>0 and int(d.get("bid_quantity",0))>0]
-                asks=[d for d in depth if float(d.get("ask_price",0))>0 and int(d.get("ask_quantity",0))>0]
-                bid=max(bids,key=lambda d:float(d["bid_price"])) if bids else {}
-                ask=min(asks,key=lambda d:float(d["ask_price"])) if asks else {}
-                quote={**contract,**ordering,"timestamp":received,"quote_update_timestamp":received,
-                    "exchange_timestamp":exchange_timestamp(packet.get("LTT")),"last_trade_timestamp":exchange_timestamp(packet.get("LTT")),
-                    "source":"dhan_market_feed_depth","credential_generation":self.credential_generation,
-                    "packet_type":packet.get("type"),"sequence":packet.get("sequence",packet.get("seq")),
-                    "exchange_segment":packet.get("exchange_segment"),"raw_exchange_timestamp":packet.get("LTT"),
-                    "depth":depth,
-                    "bid":float(bid.get("bid_price",0)),"bid_qty":int(bid.get("bid_quantity",0)),
-                    "ask":float(ask.get("ask_price",0)),"ask_qty":int(ask.get("ask_quantity",0)),
-                    "ltp":float(packet.get("LTP",0)),
-                    "volume":packet.get("volume") if packet.get("volume") is not None else contract.get("volume"),
-                    "oi":packet.get("OI") if packet.get("OI") is not None else contract.get("oi")}
-                if self.recorder: quote["observation_id"]=self.recorder.record("option_depth",quote,self.credential_generation)
-                with self.lock: self.option_quotes[contract["contract_id"]]=quote
+            if not isinstance(packet, dict): continue
+            try:
+                self._accept_packet(packet)
+            except Exception as exc:
+                # A bad observation must not discard other contracts in the
+                # batch. Never include packet contents or exception text.
                 with self.lock:
-                    self.recent_market_events.append({"event_type":"option_depth","received_at":received,"normalized":quote})
-                continue
-            symbol = self.security_to_symbol.get(security_id)
-            if not symbol or key[0]!=0:
-                continue
-            ltp = float(packet["LTP"]) if packet.get("LTP") is not None else None
-            if ltp is None: continue
+                    self.packet_errors+=1
+                    self.last_packet_error={"type":type(exc).__name__,
+                        "received_at":datetime.now(timezone.utc).isoformat()}
+
+    def _accept_packet(self, packet):
+        security_id = str(packet.get("security_id", ""))
+        received=datetime.now(timezone.utc).isoformat()
+        self.last_packet_at=received
+        key=(int(packet.get("exchange_segment",0)),security_id)
+        with self.lock: contract=self.option_contracts.get(key)
+        if contract and packet.get("type")=="Full Data":
+            depth=packet.get("depth") or []
+            bids=[d for d in depth if float(d.get("bid_price",0))>0 and int(d.get("bid_quantity",0))>0]
+            asks=[d for d in depth if float(d.get("ask_price",0))>0 and int(d.get("ask_quantity",0))>0]
+            bid=max(bids,key=lambda d:float(d["bid_price"])) if bids else {}
+            ask=min(asks,key=lambda d:float(d["ask_price"])) if asks else {}
+            quote={**contract,"timestamp":received,"quote_update_timestamp":received,
+                "exchange_timestamp":exchange_timestamp(packet.get("LTT")),"last_trade_timestamp":exchange_timestamp(packet.get("LTT")),
+                "source":"dhan_market_feed_depth","credential_generation":self.credential_generation,
+                "packet_type":packet.get("type"),"sequence":packet.get("sequence",packet.get("seq")),
+                "exchange_segment":packet.get("exchange_segment"),"raw_exchange_timestamp":packet.get("LTT"),
+                "depth":depth,
+                "bid":float(bid.get("bid_price",0)),"bid_qty":int(bid.get("bid_quantity",0)),
+                "ask":float(ask.get("ask_price",0)),"ask_qty":int(ask.get("ask_quantity",0)),
+                "ltp":float(packet.get("LTP",0)),
+                "volume":packet.get("volume") if packet.get("volume") is not None else contract.get("volume"),
+                "oi":packet.get("OI") if packet.get("OI") is not None else contract.get("oi")}
             ordering=self._packet_order(key,packet,received)
-            if ordering["ordering_rejected"]: continue
-            close = float(packet["close"]) if packet.get("close") not in (None, "") else None
-            tick = {**ordering,"symbol": symbol, "security_id": security_id,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "packet_type":packet.get("type"),"sequence":packet.get("sequence",packet.get("seq")),
-                    "exchange_segment":packet.get("exchange_segment"),"raw_exchange_timestamp":packet.get("LTT"),
-                    "ltp": ltp,
-                    "open": packet.get("open"), "high": packet.get("high"), "low": packet.get("low"),
-                    "close": close, "volume": packet.get("volume"), "oi": packet.get("OI"),
-                    "change_pct": ((ltp - close) / close * 100) if ltp is not None and close else None,
-                    "source": "dhan_market_feed"}
-            received=datetime.now(timezone.utc).isoformat()
-            tick["timestamp"]=received
-            tick["last_trade_timestamp"]=exchange_timestamp(packet.get("LTT"))
-            tick["exchange_timestamp"]=tick["last_trade_timestamp"]
-            tick["quote_update_timestamp"]=received
-            if self.recorder: tick["observation_id"]=self.recorder.record("underlying",tick,self.credential_generation)
-            if self.store:
-                self.recent_market_events.append(
-                    {"event_type":"market_feed","received_at":received,"symbol":symbol,
-                     "security_id":security_id,"sequence":tick["sequence"],
-                     "sequence_status":ordering["ordering_status"],
-                     "raw":packet,"normalized":tick,"source":"dhan_market_feed"})
+            if ordering["ordering_rejected"]: return
+            quote.update(ordering)
+            if self.recorder: quote["observation_id"]=self.recorder.record("option_depth",quote,self.credential_generation)
+            with self.lock: self.option_quotes[contract["contract_id"]]=quote
             with self.lock:
-                self.latest[symbol] = tick
+                self.recent_market_events.append({"event_type":"option_depth","received_at":received,"normalized":quote})
+            return
+        symbol = self.security_to_symbol.get(security_id)
+        if not symbol or key[0]!=0:
+            return
+        ltp = float(packet["LTP"]) if packet.get("LTP") is not None else None
+        if ltp is None: return
+        close = float(packet["close"]) if packet.get("close") not in (None, "") else None
+        ordering=self._packet_order(key,packet,received)
+        if ordering["ordering_rejected"]: return
+        tick = {**ordering,"symbol": symbol, "security_id": security_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "packet_type":packet.get("type"),"sequence":packet.get("sequence",packet.get("seq")),
+                "exchange_segment":packet.get("exchange_segment"),"raw_exchange_timestamp":packet.get("LTT"),
+                "ltp": ltp,
+                "open": packet.get("open"), "high": packet.get("high"), "low": packet.get("low"),
+                "close": close, "volume": packet.get("volume"), "oi": packet.get("OI"),
+                "change_pct": ((ltp - close) / close * 100) if ltp is not None and close else None,
+                "source": "dhan_market_feed"}
+        received=datetime.now(timezone.utc).isoformat()
+        tick["timestamp"]=received
+        tick["last_trade_timestamp"]=exchange_timestamp(packet.get("LTT"))
+        tick["exchange_timestamp"]=tick["last_trade_timestamp"]
+        tick["quote_update_timestamp"]=received
+        if self.recorder: tick["observation_id"]=self.recorder.record("underlying",tick,self.credential_generation)
+        if self.store:
+            self.recent_market_events.append(
+                {"event_type":"market_feed","received_at":received,"symbol":symbol,
+                 "security_id":security_id,"sequence":tick["sequence"],
+                 "sequence_status":ordering["ordering_status"],
+                 "raw":packet,"normalized":tick,"source":"dhan_market_feed"})
+        with self.lock:
+            self.latest[symbol] = tick
 
     def snapshot(self) -> dict[str, Any]:
         self.start()
@@ -405,6 +418,7 @@ class DhanMarketData:
                 "requested_symbols": self.symbol_names, "symbols": symbols,
                 "source": "dhan_market_feed" if self.configured else "unavailable",
                 "error": self.error,"last_packet_at":self.last_packet_at,
+                "packet_errors":self.packet_errors,"last_packet_error":self.last_packet_error,
                 "connection_http_status":self.connection_http_status,
                 "reconnect_in_seconds":round(max(0,self.reconnect_after-time.monotonic()),1),
                 "option_subscriptions":len(self.option_contracts),"option_depth_quotes":len(self.option_quotes),

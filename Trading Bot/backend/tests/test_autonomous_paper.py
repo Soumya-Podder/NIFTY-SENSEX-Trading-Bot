@@ -18,6 +18,57 @@ from tests.test_paper import plan_account, contract, quote, enter
 from tests.test_simple_paper import downtrend_frame
 
 
+@pytest.mark.parametrize('call',[False,True])
+def test_orderly_extended_momentum_is_symmetric_and_rejects_shocks(call):
+    from app.autonomous_policy import continuation_guard
+    bars=pd.DataFrame({'close':[120.,118.,116.,114.,112.,110.],
+        'ema21':[130.,129.,128.,127.,126.,125.], 'ema9':[122.,120.,118.,116.,114.,112.],
+        'atr':3.,'adx':30.,'high':[122.,120.,118.,116.,114.,112.],
+        'low':[118.,116.,114.,112.,110.,108.]})
+    if call:
+        for key in ('close','ema21','ema9'):bars[key]=240-bars[key]
+        low,high=bars.low.copy(),bars.high.copy()
+        bars['low'],bars['high']=240-high,240-low
+    allowed,_,style=continuation_guard(bars,call)
+    assert allowed and style=='orderly_momentum_continuation'
+    bars.loc[5,'high']=bars.loc[5,'low']+10
+    assert not continuation_guard(bars,call)[0]
+    bars.loc[5,'high']=bars.loc[5,'low']+4
+    bars.loc[5,'ema9']=bars.loc[5,'close']+(10 if not call else -10)
+    assert not continuation_guard(bars,call)[0]
+
+
+def test_autonomous_call_enters_with_net_two_r_without_live_orders(tmp_path,monkeypatch):
+    engine,broker,_,clock,q,under=setup_engine(tmp_path,monkeypatch)
+    frame=engine.frames['NIFTY']
+    for key in ('open','close','ema9','ema21'):frame[key]=48000-frame[key]
+    low,high=frame.low.copy(),frame.high.copy()
+    frame['low'],frame['high']=48000-high,48000-low
+    q.update(option_type='CALL',delta=.5)
+    under['ltp']=24010.
+    engine.portfolio_cycle()
+    positions=broker.snapshot()['positions']
+    assert len(positions)==1 and positions[0]['option_type']=='CALL'
+    assert positions[0]['entry_economics']['strict_2r_pass']
+    assert positions[0]['risk_rupees']<=min(650*positions[0]['qty']//positions[0]['lot_size'],1000)
+
+
+def test_cost_adjusted_target_cannot_cross_confirmed_structure(tmp_path,monkeypatch):
+    from app.pipeline import CandidateRejected
+    engine,broker,_,clock,q,_=setup_engine(tmp_path,monkeypatch)
+    signals,_=engine.evaluate_market(engine.frames['NIFTY'],clock['now'],'NIFTY',engine.status['market_structure']['NIFTY'])
+    signal=next(s for s in signals if s['strategy_id']=='trend_continuation')
+    planned=engine.plan_candidate(signal,q,{**q,'low':98.,'option_atr':2.})
+    original_stop=planned['stop_price']
+    # Initial gross target fits; the fee-adjusted target must not cross the zone.
+    gross_move=(planned['target_price']-q['ask'])/abs(q['delta'])
+    boundary=signal['feature_row']['close']-gross_move-.01
+    planned['market_structure']['target_obstacle']={'timeframe':'5m','lower':boundary-1,'upper':boundary}
+    with pytest.raises(CandidateRejected,match='target room'):
+        engine.finalize_candidate(planned,q,q['lot_size'])
+    assert planned['stop_price']==original_stop
+
+
 def test_empty_live_snapshot_cannot_reuse_a_cached_pre_reconnect_book(tmp_path,monkeypatch):
     engine=setup_engine(tmp_path,monkeypatch)[0]
     engine.quotes=engine.market.execution_snapshot('NIFTY')['options']
@@ -64,6 +115,7 @@ def test_autonomous_downtrend_enters_and_exits_without_any_dhan_order(tmp_path, 
     assert position["risk_rupees"] <= min(650*position["qty"]//position["lot_size"],1000) and position["qty"]*position["entry"] < 24000
     assert position["qty"] % position["lot_size"] == 0
     assert position["entry_features"]["paper_policy_version"] == VERSION
+    assert position['entry_economics']['net_reward_risk'] >= 2
     engine.portfolio_cycle()
     assert broker.snapshot()["open_positions"] == 1
     clock["now"] += timedelta(seconds=2)

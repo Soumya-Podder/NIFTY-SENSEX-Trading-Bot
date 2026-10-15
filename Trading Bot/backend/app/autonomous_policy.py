@@ -9,10 +9,10 @@ from .market_structure import analyze_structure, structure_evidence
 from .pipeline import plan_protection, CandidateRejected, CandidateDataUnavailable
 from .option_screen import describe as option_screen_policy
 
-VERSION = "autonomous-paper-v1"
+VERSION = "autonomous-paper-v2"
 STRATEGY_SPECS = (
-    {"id": "trend_continuation", "name": "Trend continuation", "version": "autonomous-continuation-v1",
-     "condition": "ADX >= 20, aligned EMA 9/21 and completed continuation without excessive extension", "horizon_minutes": 30},
+    {"id": "trend_continuation", "name": "Trend continuation", "version": "autonomous-continuation-v2",
+     "condition": "Completed EMA/ADX continuation; extended trends require orderly momentum confirmation", "horizon_minutes": 30},
     *({**s, "version": "autonomous-"+s["version"], "horizon_minutes": 45 if s["id"] == "orb_retest" else 30 if s["id"] == "trend_pullback" else 10} for s in STRATEGIES),
 )
 
@@ -22,6 +22,30 @@ def strategy_order(regime):
         ("trend_pullback", "trend_continuation", "orb_retest", "range_rejection") if regime in {"TREND_UP", "TREND_DOWN"}
         else ("orb_retest", "trend_continuation", "trend_pullback", "range_rejection"))
     return {name: i for i, name in enumerate(order)}
+
+
+def continuation_guard(bars, call):
+    """Bound ordinary entries by EMA21; orderly momentum by the faster EMA9.
+
+    This paper hypothesis is symmetric and causal, not a relaxed risk budget.
+    Reject single-bar shocks and chasing far beyond the short-term average.
+    """
+    last = bars.iloc[-1]
+    atr = float(last.atr)
+    direction = 1 if call else -1
+    slope = (float(last.ema21)-float(bars.iloc[-6].ema21))/atr
+    if direction*slope < .05:
+        return False, "EMA 21 slope contradicts the completed continuation", None
+    extension = abs(float(last.close-last.ema21))/atr
+    if extension <= 2:
+        return True, None, "bounded_continuation"
+    recent = bars.tail(3)
+    ordered = all(direction*float(v)>0 for v in recent.close.diff().iloc[1:])
+    fast_extension = abs(float(last.close-last.ema9))/atr
+    bar_range = float(last.high-last.low)
+    if last.adx >= 25 and direction*slope >= .2 and ordered and fast_extension <= 1.25 and bar_range <= 2*atr:
+        return True, None, "orderly_momentum_continuation"
+    return False, f"Extended {extension:.2f} ATR from EMA 21; orderly momentum confirmation missing", None
 
 
 def evaluate_market(frame, now, symbol, structure=None):
@@ -37,14 +61,17 @@ def evaluate_market(frame, now, symbol, structure=None):
         regime = "TREND_UP" if last.adx >= 20 and last.ema9 > last.ema21 and slope >= .05 else (
             "TREND_DOWN" if last.adx >= 20 and last.ema9 < last.ema21 and slope <= -.05 else rows[0].get("regime", "TRANSITION"))
         row.update(last_bar=last.timestamp.isoformat(), feature_row=rows[0].get("feature_row"), regime=regime)
-        if trend and (regime != trend["regime"] or abs(float(last.close-last.ema21)) > 2*atr):
-            trend = None
-            row["reason"] = "Trend is flat, contradictory or extended beyond two ATR from EMA 21"
+        if trend:
+            allowed, rejection, entry_style = continuation_guard(bars, trend['option_type']=='CALL')
+            if regime != trend['regime'] or not allowed:
+                trend = None
+                row['reason'] = rejection or 'Completed-bar regime contradicts continuation'
         if trend:
             trend.update(strategy_id="trend_continuation", underlying_entry=float(last.close),
                          max_greeks_age_seconds=option_screen_policy()["max_greek_age_seconds"],
                          retest_timestamp=bars.iloc[-2].timestamp.isoformat(), feature_row=rows[0]["feature_row"],
-                         evidence=["completed_continuation", "aligned_ema9_21", "adx_at_least_20", "bounded_extension"])
+                         entry_style=entry_style,
+                         evidence=["completed_continuation", "aligned_ema9_21", "adx_at_least_20", entry_style])
             signals.append(trend)
             row.update(status="CANDIDATE", reason="Completed directional continuation")
         for item in rows: item["regime"] = regime
@@ -76,6 +103,12 @@ def plan_candidate(signal, contract, candle):
         raise CandidateDataUnavailable("Completed selected-contract ATR required for adaptive protection")
     planned = plan_protection(signal, contract, candle, contract["ask"],
                               horizon_minutes=signal["horizon_minutes"], min_stop=atr)
+    planned['setup_underlying_target'] = signal.get('underlying_target')
+    return validate_target_room(planned, contract)
+
+
+def validate_target_room(planned, contract):
+    signal = planned
     evidence = signal.get("market_structure", {})
     if evidence.get("status") != "OBSERVED":
         raise CandidateDataUnavailable("Current causal support/resistance evidence unavailable")
@@ -90,12 +123,12 @@ def plan_candidate(signal, contract, candle):
         if direction*(boundary-price) < projected_move:
             raise CandidateRejected(f"Insufficient 2R target room before confirmed {obstacle['timeframe']} zone")
         target = min(target, boundary) if direction == 1 else max(target, boundary)
-    old_target = signal.get("underlying_target")
+    old_target = signal.get("setup_underlying_target",signal.get("underlying_target"))
     if old_target is not None and direction*(float(old_target)-price) < projected_move:
         raise CandidateRejected("Range midpoint offers insufficient room for the declared 2R premium target")
     planned.update(underlying_target=target)
     planned["protection_evidence"].update(source="completed_contract_structure_and_ATR",
-        option_atr=atr, target_room_points=direction*(target-price), target_room_basis="Observed delta approximation, not an option payoff guarantee")
+        option_atr=planned['protection_evidence']['min_stop'], target_room_points=direction*(target-price), target_room_basis="Observed delta approximation, not an option payoff guarantee")
     return planned
 
 

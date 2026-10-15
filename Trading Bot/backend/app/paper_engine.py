@@ -57,7 +57,18 @@ class PaperEngine:
         self.status["frozen_model"]=frozen
 
     def publish(self,item):
-        self.store.record_event(item); event_bus.publish(item)
+        try:
+            self.store.record_event(item,timeout=.25)
+            self.status["event_journal_error"]=None
+        except Exception as exc:
+            # Diagnostic history is advisory. Account/order commits and the
+            # executable quote recorder remain mandatory admission safeguards.
+            self.status["event_journal_error"]=type(exc).__name__
+            journal=self.status.setdefault("event_journal",{"failed_events":0})
+            journal.update(failed_events=journal["failed_events"]+1,
+                last_failed_at=self._now().isoformat(),last_failed_event_id=item.get("id"),
+                history_complete=False)
+        event_bus.publish(item)
         symbol=item.get("symbol")
         if symbol in {"NIFTY","SENSEX"}:
             self.status["scans"].setdefault(symbol,{}).update(stage=item["agent"],reason=item["summary"],status=item["status"],decision_at=item["timestamp"])
@@ -318,16 +329,19 @@ class PaperEngine:
             reason=(position.get("exit_request") or {}).get("reason") or plan_exit(position,now,
                 bid=quote.get("bid") if fresh else None,underlying=spot,
                 halted=self.broker.state["halted"],close_start=self.settings.session_exit)
-            if reason: self.broker.request_exit(position["id"],reason,now)
-            if not reason or not fresh or int(quote.get("bid_qty") or 0)<int(position["lot_size"]): continue
+            if not reason: continue
+            if not fresh or int(quote.get("bid_qty") or 0)<int(position["lot_size"]):
+                self.broker.request_exit(position["id"],reason,now)
+                continue
             last=self.protection_attempts.get(position["id"],0)
             if time.monotonic()-last<1: continue
             self.protection_attempts[position["id"]]=time.monotonic()
             try:
-                trade=self.broker.close(position["id"],quote,reason,now)
+                provider=(lambda: self.market.execution_snapshot(position["symbol"])["options"].get(position["contract_id"],{})) if self.market else None
+                trade=self.broker.close(position["id"],quote,reason,now,quote_provider=provider)
             except Exception as exc:
                 self.status["protection_error"]=str(exc)[:300]
-                try: self.broker.control(halted=True,reason="Exit pending: protection retry required")
+                try: self.broker.exit_error_halt("Exit pending: protection retry required")
                 except Exception: pass
             else:
                 if trade:
@@ -504,10 +518,11 @@ class PaperEngine:
             reason=(p.get("exit_request") or {}).get("reason") or reason
             if reason:
                 try:
-                    trade=self.broker.close(p["id"],q,reason,now)
+                    provider=(lambda: self.market.executable_quotes().get(p["contract_id"],{})) if self.market and hasattr(self.market,"executable_quotes") else None
+                    trade=self.broker.close(p["id"],q,reason,now,quote_provider=provider)
                 except Exception as exc:
                     self.status["exit_error"]=str(exc)[:300]
-                    self.broker.control(halted=True,reason="Exit pending: waiting for executable depth or persistence recovery")
+                    self.broker.exit_error_halt("Exit pending: waiting for executable depth or persistence recovery")
                 else:
                     if trade:
                         self.status["exit_error"]=None

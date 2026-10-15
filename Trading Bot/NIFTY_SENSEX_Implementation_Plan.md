@@ -1,6 +1,6 @@
 # NIFTY and SENSEX paper-trading system — implementation and operating plan
 
-Updated: **13 October 2026**. Source/configuration review: **12:14 pm IST**. All times are **Asia/Kolkata (IST)**. Project root: `E:\trading_bot_full`. Application root: `E:\trading_bot_full\Trading Bot`.
+Updated: **14 October 2026**. Entry-path remediation reviewed and deployed during the afternoon session; dated earlier observations below remain historical. All times are **Asia/Kolkata (IST)**. Project root: `E:\trading_bot_full`. Application root: `E:\trading_bot_full\Trading Bot`.
 
 This is the consolidated specification of the implementation on disk, its observed deployment, evidence limits and remaining work. It replaces the accumulated update notes previously in this file. A feature being implemented, a test passing, a worker running and a strategy having a profitable edge are four different claims.
 
@@ -17,11 +17,11 @@ This is the single master implementation document. Read it top to bottom for the
 | Risk | ₹650 per lot, capped by remaining ₹1,000 planned daily allocation; ₹200 reserve and ₹1,200 hard halt |
 | Active strategies | Four deterministic setup hypotheses; not an unrestricted AI inventing strategies |
 | User's latest reward/risk requirement | At least 1:2 **net after costs** |
-| Actual reward/risk admission | Current `MIN_NET_REWARD_RISK` is **1.0**; nominal premium target is 2R before costs. Strict net 2R is **not yet enforced by the current configuration** |
+| Actual autonomous admission | Code-enforced net reward/risk minimum **max(2.0, configured minimum)** in review and final broker checks; target includes estimated fees/spread risk and is rechecked against structure. `.env` remains user-controlled |
 | Credentials | Manually supplied; automatic generation/renewal disabled |
 | Token-update form | Implemented and local HTTP behavior tested; saves only on explicit user submission after Dhan validation |
 | Phone token updates | Tailscale integration prepared; installation, sign-in and real remote verification still pending |
-| 13 October 12:14 pm runtime snapshot | Service responds in paper mode but is degraded by DH-901; no open positions |
+| Dated authentication failure | 13 October 12:14 pm had DH-901; the manually replaced token was accepted on 14 October and market data recovered |
 | Performance evidence | Unvalidated paper research; no established profitable edge or guaranteed monthly return |
 
 ## Contents
@@ -198,11 +198,11 @@ Successful Dhan brokerage calculator responses retain their original request fin
 
 ## 5. Strategies and dynamic selection
 
-Active policy version: `autonomous-paper-v1`. All four setups evaluate both indices against completed one-minute candles; they share one account. Parameters are explicit engineering hypotheses, not statistically proven optimal values. Legacy `simple`, `portfolio` and `orb_only` modes remain available for comparison and their old reports are not relabelled as autonomous results.
+Active policy version: `autonomous-paper-v2`. Older v1 results are not evidence for this revised entry policy. All four setups evaluate both indices against completed one-minute candles; they share one account. Parameters are explicit engineering hypotheses, not statistically proven optimal values. Legacy `simple`, `portfolio` and `orb_only` modes remain available for comparison and their old reports are not relabelled as autonomous results.
 
 | Hypothesis | Version | Confirmation | Horizon |
 | --- | --- | --- | ---: |
-| Trend continuation | `autonomous-continuation-v1` | ADX ≥20, aligned EMA9/21 and directional EMA21 slope ≥0.05 ATR; completed continuation with bounded ≤2 ATR extension | 30 min |
+| Trend continuation | `autonomous-continuation-v2` | Completed EMA/ADX break; ≤2 ATR from EMA21 normally. Beyond that, require ADX≥25, directional slope≥0.2 ATR, three orderly closes, distance from EMA9≤1.25 ATR and signal range≤2 ATR | 30 min |
 | Opening-range retest | `autonomous-orb-retest-v1` | 09:15–09:30 range, buffered break, later retest and separate resumption | 45 min |
 | Trend pullback | `autonomous-trend-pullback-v1` | ADX ≥25, EMA9/21 alignment/slope, pullback near EMA21 then resumption; no overextension | 30 min |
 | Range rejection | `autonomous-range-rejection-v1` | ADX ≤20, flat EMA21, prior 30-bar range ≥2 ATR, boundary rejection and confirmation with sufficient room to midpoint | 10 min |
@@ -233,33 +233,28 @@ This is a logical dependency order; evidence can be prepared asynchronously. App
 - Positive valid book, volume/OI, lot/tick, required universe and depth.
 - Spread `(ask − bid) / midpoint`: maximum 2%; ≤1% preferred.
 - Preferred Delta/liquidity within nearest eligible expiry; cheap premium alone is not a rule.
-- Planned net reward/risk floor 1.0 after charges; nominal target 2R before costs. Strict net-2R is a separate comparison, not manufactured by extending a target.
+- Autonomous net reward/risk floor is at least 2.0 after charges and the existing spread reserve. A cost-adjusted target is calculated before admission, then checked against confirmed structural obstacles. No structural stop is tightened to fit risk.
 
 Autonomous protection requires the exact selected contract's completed signal/retest-minute candle and at least fourteen causal contract bars for option ATR. The stop respects that candle's low and a minimum observed option-ATR distance; it is not a hardcoded percentage. Live day-low metadata cannot overwrite this candle. Never tighten a stop to fit the risk allowance. Reject any quantity exceeding its ₹650-per-lot ceiling or the remaining daily allocation.
 
 Before entry, the nominal 2R premium target must have room before the nearest already-confirmed higher-timeframe obstacle. The observed Delta maps premium distance to an approximate index move; this is explicitly a local sensitivity approximation. A range midpoint must also offer enough room. The target is never extended or the stop reduced merely to pass the gate.
 
-### Latest requirement: 1:2 net reward/risk and the implementation gap
+### Net 1:2 entry planning and final admission
 
-The user's latest requirement is **risk one rupee to target at least two rupees net**, after estimated costs. This is an entry-planning objective, not a guarantee that every exit earns 2R.
-
-The actual `net_economics` implementation currently calculates:
+Implemented on 14 October in autonomous mode without editing `.env`. The engine uses `max(2.0, settings.min_net_reward_risk)` for specialist review and its broker's final atomic admission. Legacy comparison modes retain their own settings; their results are not relabelled as this policy.
 
 ```text
 spread reserve = (entry ask − observed bid) × quantity
-all-in planned risk = (entry − stop) × quantity + spread reserve + stop-side round-trip charges
+all-in planned risk = (entry − structural stop) × quantity + spread reserve + stop-side round-trip charges
 net target reward = (target − entry) × quantity − target-side round-trip charges
-net reward/risk = net target reward / all-in planned risk
-strict_2r_pass = net reward/risk >= 2
+required target >= entry + (minimum net ratio × planned risk + target-side charges) / quantity
 ```
 
-The broker rechecks this ratio atomically against its configured minimum. Source default and the non-secret effective setting inspected on 13 October are **1.0**, so merely recording `strict_2r_pass` does not enforce the latest requirement. Current target planning uses nominal 2R premium distance; costs normally reduce the resulting net ratio. This documentation update does not change `.env` or trading code and must not be described as implementing strict net 2R.
+The target is rounded up to the actual contract tick and fees are recalculated at the proposed target in a bounded loop. Required fee HTTP remains in the preparation worker during live operation; final admission uses prepared fee evidence. Failure to converge or unavailable fee evidence blocks entry. The stop never moves closer to make a trade affordable. Confirmed support/resistance and an original range midpoint are rechecked against the cost-adjusted target, rather than merely the earlier gross-2R price. The derived index target is refreshed using observed delta, which remains an approximation.
 
-Required completion: enforce at least 2.0 in final admission as well as candidate sizing/review; confirm a plausible cost-adjusted target has room before structure; reject trades without that room. Never reduce structural stop distance, increase the daily budget or extend a target unrealistically just to pass. Test candidates that pass gross 2R but fail net 2R, multiple lots, fee changes during admission and limited target room. User-controlled `.env` ownership remains in force.
+A lower `.env` minimum cannot weaken the autonomous 2.0 code floor. Higher configured minima are honored. A changed quote/cost can still cause final rejection. Planned 2R does not guarantee a realized 2R win: invalidation, time, adaptive exits, slippage and absent depth remain applicable.
 
-Illustration only: entry ₹100, stop ₹90, hypothetical quantity 50 and ₹60 stop-side costs give ₹560 risk before any extra spread reserve. A ₹120 target with ₹60 target-side costs yields ₹940 net, a ratio of 1.68. A ₹123.60 target yields ₹1,120 net, or 2.0, only under those assumptions and zero additional spread reserve. Use actual contract quantity/tick and recalculated costs, not this illustrative quantity.
-
-Delta is only a local premium sensitivity approximation. Actual/replayed option P&L must use the same identified contract's admissible entry/exit premiums and charges. The earlier illustrative −₹640 based on assumed delta/quantity is withdrawn as a reported daily virtual result. Index invalidation being touched proves neither the option fill price nor its rupee loss.
+Earlier illustrative −₹640 from assumed delta/quantity is not a recorded daily virtual result. Exact option prices and charges are required to report simulated rupee P&L.
 
 ### Sizing: risk-sized-whole-lots-v3-per-lot
 
@@ -519,11 +514,11 @@ The existing feed-watch worker runs component-specific recovery checks roughly e
 
 `engine.recovery` and Agentic view's Automatic recovery panel show current checks, failure category, attempted action and attempt count. Dashboard System & risk details also shows the current recovery state and last check. The latest fifty state/attempt events persist in the existing database under `paper_recovery/status`. Restart restores history but begins current checks at `STARTING`. Unchanged failures during backoff do not flood history. Recovery journal failures are advisory; the account persistence gate remains mandatory. Account and recovery writes have bounded Python-lock and SQLite waits, so a slow research write cannot indefinitely hold the exit worker.
 
-The existing single-instance supervisor checks execution and protection heartbeats independently. A stale execution worker while flat, or a stale/dead protection worker while occupied, can trigger a restart of its owned API after three qualifying checks and a read-only validation of the committed paper ledger. The endpoint reports `degraded` for stale workers; that response remains eligible for watchdog inspection. An owned API unresponsive for sixty seconds is also recoverable after a ninety-second startup grace. The old process tree must terminate before a replacement starts. Restarts are limited to three per hour, at least five minutes apart, with the restart budget and bounded diagnostic history retained in `backend/.paper_service.status.json` and exposed by `/api/health`. Unowned APIs, unreadable ledgers and mere missing market data never authorize a watchdog restart. Restored positions and pending/partial exit requests remain in the original account; new fresh observed depth is still required to fill. A held-contract feed can reconnect between the 15:05 liquidation request and 15:30 market close, including when other subscribed contracts still have fresh data. After close, unavailable depth remains pending rather than producing an invented exit.
+The existing single-instance supervisor checks execution and protection heartbeats independently. A stale/dead execution worker while flat or occupied, or a stale/dead protection worker while occupied, can trigger a restart of its owned API after three qualifying checks and a read-only validation of the committed paper ledger. A configured worker with no first heartbeat remains subject to the ninety-second startup grace. A concurrent persistence error does not hide a genuine worker stall. The endpoint reports `degraded` for stale workers; that response remains eligible for watchdog inspection. An owned API unresponsive for sixty seconds is also recoverable after a ninety-second startup grace. The old process tree must terminate before a replacement starts. Restarts are limited to three per hour, at least five minutes apart, with the restart budget and bounded diagnostic history retained in `backend/.paper_service.status.json` and exposed by `/api/health`. Unowned APIs, unreadable ledgers and mere missing market data never authorize a watchdog restart. If the original API recovers, verified healthy workers clear stale supervisor BLOCKED/BACKOFF status without a restart. Restored positions and pending/partial exit requests remain in the original account; new fresh observed depth is still required to fill. A held-contract feed can reconnect between the 15:05 liquidation request and 15:30 market close, including when other subscribed contracts still have fresh data. After close, unavailable depth remains pending rather than producing an invented exit.
 
 Incoming feed books reject nonincreasing/invalid sequence values when supplied, missing previously observed sequences, and regressing/missing previously observed last-trade times. Sequence baselines reset per connection; equal last-trade times remain valid because book changes need not include a trade. Rejected packets are archived diagnostically but cannot overwrite the executable book or refresh its receipt timestamp. A reconnect clears executable quotes; the selector does not fall back to a copied pre-reconnect book. Dhan's documented Full feed and installed SDK provide no exchange sequence or book-update timestamp, so missing sequences in that feed are explicitly unverified rather than a universal entry veto. Receive-age gates do not prove exchange freshness. Paper broker health describes the top-of-book fill assumptions and the absence of latency, queue, competing-consumption and market-impact modelling.
 
-Windows Task Scheduler currently uses an interactive user logon. WakeToRun/StartWhenAvailable do not establish operation after logout, host shutdown or network failure. Unattended service deployment remains an operational prerequisite; the bot's guarded paper observations and recorded P&L remain unvalidated trading evidence.
+The supervisor now requests Windows automatic-idle-sleep prevention on weekdays 09:10–15:35, releasing that request outside the window. This does not override explicit sleep, lid action, shutdown, power loss or network outages and does not change system power settings. Windows Task Scheduler currently uses an interactive user logon. WakeToRun/StartWhenAvailable do not establish operation after logout, host shutdown or network failure. Unattended service deployment remains an operational prerequisite; the bot's guarded paper observations and recorded P&L remain unvalidated trading evidence.
 
 System & risk details exposes readiness blockers; positions show exit requests. Historical counts, current liveness, repair attempts and current data freshness remain separate. These mechanisms repair tested runtime failures, not arbitrary source code or trading losses. Complete market-session operation and profitable forward performance remain separate acceptance criteria.
 
@@ -624,7 +619,27 @@ Dependencies constrain Pandas below 3 and NumPy below 2.5. Validated installed p
 
 ## 17. Validation, deployment and session evidence
 
-### Current review: 13 October 2026
+### 15 October protective execution and recovery remediation
+
+The durable account recorded one NIFTY 22,950 PUT paper trade (19 October expiry), 130 units, entered at 11:25:56 at ₹148.90 and exited at 11:27:05 at ₹140.65. Gross loss was ₹1,072.50 and estimated charges ₹97.08, giving net loss ₹1,169.58 against ₹554.49 planned risk. The first saved RISK_HALT exit request was at 11:26:41; seven attempts were recorded, including a quote expiring during exit preparation. Storage contention coincided with protective processing. This establishes an execution overrun, not the exact amount attributable to each delay or a guaranteed earlier executable fill. The flat account's daily halt remains intact.
+
+Recovery hardening stays in the existing modules. Store payload serialization occurs before acquiring the shared writer lock. Diagnostic event writes have bounded lock waits and expose missing-history counts without stopping protective execution; mandatory account/order commits and quote-recorder readiness remain enforced. Exit preparation refreshes the held contract's actual observed book after intent persistence and fee preparation, rechecking price, quantity, identity and freshness; unavailable books remain pending. Failed exits preserve pre-existing manual and risk halts. Final entry admission rejects price drift that would undercut the observed option ATR stop floor, leaving the signal unconsumed for reassessment rather than changing its stop or risk allowance.
+
+Malformed feed packets are isolated from later valid packets in the same batch and expose only sanitized failure diagnostics. Quote recording clears a STORAGE_LIMIT error only after a successful durable write; drop counts and incomplete-coverage evidence remain. Supervisor recovery covers actual stalled execution/protection workers even when persistence is also unhealthy, subject to the same committed-ledger and process-ownership checks. These are bounded repairs for tested failures; invalid credentials still require manual replacement, and missing liquidity, corrupt storage, shutdown and network/provider outages cannot be converted into fills. No `.env`, risk limits or live-order authority changes are part of this remediation.
+
+Exit charges remain explicitly estimated from saved broker stop/target prequotes when the fast path is used. A premium gap above the prepared price envelope can produce greater turnover-based charges than that reserve; it is not a universal upper bound or a live execution-cost guarantee.
+
+Validation on 15 October: the complete backend run reported 601 passed and two stale-fixture failures (an obsolete v1 assertion and a fixed September receipt date). Both affected test files then passed all 32 cases after correcting the fixtures and adding deterministic age-boundary checks; the production 15-day evidence guard was retained. An additional concurrent-exit halt regression passed separately. Targeted recovery checks covered delayed intent persistence, fee/quote races, stale and missing books, partial exits, malformed packets, recorder storage recovery, manual/risk halt preservation, credential rotation and occupied-account restart. At 21:47 IST, the reloaded supervisor was RUNNING, all thirteen paper workers were alive, runtime was healthy and operational, and active/advisory error maps were empty. Before/after hashes verified the committed account and `.env` were unchanged; the account remained flat with DAILY_FLATTEN preserved and live authority disabled. This was an after-hours deployment check, not a complete forward market-session validation. The current token's local expiry claim was 16 October 10:51:44 IST; manual replacement is still required.
+
+### 14 October entry-path remediation
+
+The two-ATR EMA21 veto excluded completed bearish breaks around 13:01–13:12. Version v2 retains the ordinary entry path but permits a separately evidenced orderly-momentum continuation under the bounded criteria in section 5. CALL and PUT conditions are symmetric. Pending setup reconfirmation uses the same momentum guard; risk, quote, chain, original lifetime and structural invalidation controls are not bypassed. Insufficient ADX, EMA relation, previous-high/low break and extended-momentum rejection now have specific messages.
+
+Validation: 61 autonomous-policy/replay/simple-engine regression tests passed, plus 7 Windows session-power tests. New integration checks demonstrated an isolated CALL and PUT virtual entry with net reward/risk≥2 inside the existing account limits. Shock/overextended-fast-EMA cases and a cost-adjusted target blocked by structure were rejected. Controlled fixture fills are not production trades.
+
+A causal index-only comparison of 12:30–13:21 on 14 October found zero ordinary extension-qualified candidates for either index in the tested interval. Revised guard admitted two SENSEX signal candidates, at 13:18 and 13:21; NIFTY still did not qualify. No historical option fills or profits were inferred. Diagnostic artifact: project `.tmp/entry-policy-causal-audit.json`. Revised policy remains unvalidated paper observation, not a proven edge. A supervisor reload is part of deployment; check live health/data and actual fills separately.
+
+### Historical review: 13 October 2026
 
 Non-secret effective settings inspected: autonomous mode, ₹30,000 capital, ₹650 per-lot risk, ₹1,000 planned daily allocation, ₹1,200 hard halt, one open position and **minimum net reward/risk 1.0**. Credentials were not printed or edited. At approximately 12:14 pm IST the API responded but reported `degraded`, `ENTRY_WINDOW`, `DH-901 Invalid_Authentication` and no open positions. This is a dated observation, not permanent runtime state. A healthy pre-open process check cannot establish active-session provider authentication.
 
@@ -652,7 +667,7 @@ No sustained profitable forward result, guaranteed daily/monthly return, calibra
 
 | Priority | Gap | Completion evidence |
 | --- | --- | --- |
-| P0 | Strict net 1:2 admission | Current minimum is 1.0; enforce/test the requested 2.0 floor throughout review, sizing and final broker admission without changing risk or fabricating target room |
+| P0 | Forward net-1:2 observation | Code floor and cost-adjusted structural target checks are implemented; collect live-paper decision/fill evidence and execution stress results without treating targets as realized returns |
 | P0 | Phone credential access | Complete administrator Tailscale install, same-account sign-in, exact identity/HTTPS configuration and real phone-to-desktop save/reload/rejection tests |
 | P0 | Awake-host and opening coverage | Resolve missing opening-session decisions, record continuous heartbeat/coverage, test sleep/resume and unattended startup; do not infer no-signal from missing records |
 | P0 | Fresh market-day operation | Observe pre-open through 15:35, data ages, rotation/reconnect, no-trade reasons and pending exits; never force a trade |

@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 
 from .portfolio_engine import MultiStrategyPaperEngine
-from .autonomous_policy import VERSION, STRATEGY_SPECS, evaluate_market, strategy_order, plan_candidate, management_decision
+from .autonomous_policy import VERSION, STRATEGY_SPECS, evaluate_market, strategy_order, plan_candidate, management_decision, continuation_guard, validate_target_room
 from .paper_learning import PaperResearchLearning
 from .strategy_portfolio import closed_session
 from .market_structure import structure_evidence
@@ -17,6 +17,10 @@ class AutonomousPaperEngine(MultiStrategyPaperEngine):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.minimum_net_rr = max(2., self.settings.min_net_reward_risk)
+        self.broker.option_screen_limits = (self.settings.max_spread_pct, self.minimum_net_rr)
+        self.status['portfolio']['option_screen']['min_net_reward_risk'] = self.minimum_net_rr
+        self.status['portfolio']['option_screen']['target_policy'] = 'Cost-adjusted net 2R minimum, bounded by confirmed structure; stop never tightened'
         self.learning = PaperResearchLearning(self.store)
         self.strategies = list(STRATEGY_SPECS)
         self.status["management"] = {}
@@ -44,6 +48,24 @@ class AutonomousPaperEngine(MultiStrategyPaperEngine):
     def plan_candidate(self, signal, contract, candle):
         return plan_candidate(signal, contract, candle)
 
+    def finalize_candidate(self, signal, contract, quantity):
+        import math
+        from .pipeline import CandidateRejected
+        entry=float(contract['ask']); tick=float(contract['tick_size'])
+        stop_cost=self.broker.cost.quote(contract,entry,signal['stop_price'],quantity)['total']
+        risk=(entry-signal['stop_price']+max(0,entry-float(contract['bid'])))*quantity+stop_cost
+        planned=dict(signal)
+        # Reprice estimated fees at the proposed target; never tighten protection.
+        for _ in range(4):
+            target_cost=self.broker.cost.quote(contract,entry,planned['target_price'],quantity)['total']
+            required=entry+(self.minimum_net_rr*risk+target_cost)/quantity
+            if planned['target_price']+1e-9>=required:
+                planned['protection_evidence']={**planned['protection_evidence'],'net_reward_risk_minimum':self.minimum_net_rr}
+                return validate_target_room(planned,contract)
+            planned['target_price']=round(math.ceil((required+1e-9)/tick)*tick,8)
+            planned['target_percent']=(planned['target_price']-entry)/entry
+        raise CandidateRejected('Cost-adjusted target did not converge; no paper entry')
+
     def _current_signal(self, signal, now):
         with self.lock: frame = self.frames.get(signal["symbol"])
         current, rows = self.evaluate_market(frame, now, signal["symbol"], self.status["market_structure"].get(signal["symbol"], {}))
@@ -70,9 +92,11 @@ class AutonomousPaperEngine(MultiStrategyPaperEngine):
         if signal["strategy_id"] in {"trend_continuation","trend_pullback"}:
             if last.close<=last.ema21 if call else last.close>=last.ema21:
                 return None,f"Current completed close crossed EMA 21 against {signal['option_type']} setup"
-            extension=abs(last.close-last.ema21)/last.atr
-            if extension>2:
-                return None,f"Current completed close is {extension:.2f} ATR from EMA 21; maximum is 2 ATR"
+            if signal['strategy_id']=='trend_continuation':
+                allowed,reason,_=continuation_guard(bars,call)
+                if not allowed: return None,reason
+            elif abs(last.close-last.ema21)/last.atr>2:
+                return None,'Pullback entry is extended beyond two ATR from EMA 21'
         snapshot=self.status["market_structure"].get(signal["symbol"], {})
         evidence=structure_evidence(snapshot,signal["option_type"],now)
         relation="RESISTANCE" if call else "SUPPORT"

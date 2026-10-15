@@ -35,7 +35,14 @@ def trend_signal(frame, now, symbol):
     elif last.adx >= 20 and last.ema9 < last.ema21 and last.close < last.ema9 and last.close < previous.low:
         side = "PUT"
     if side is None:
-        return None, "No completed trend continuation"
+        if last.adx < 20: return None, f"ADX {last.adx:.2f} below trend minimum 20"
+        if last.ema9 < last.ema21:
+            if last.close >= last.ema9: return None, "PUT waiting: completed close is not below EMA 9"
+            return None, f"PUT waiting: close {last.close:.2f} has not broken previous low {previous.low:.2f}"
+        if last.ema9 > last.ema21:
+            if last.close <= last.ema9: return None, "CALL waiting: completed close is not above EMA 9"
+            return None, f"CALL waiting: close {last.close:.2f} has not broken previous high {previous.high:.2f}"
+        return None, "EMA 9 and EMA 21 are equal; no directional alignment"
     recent = bars.iloc[-4:-1]
     invalidation = float(recent.low.min() if side == "CALL" else recent.high.max())
     if (side == "CALL" and invalidation >= last.close) or (side == "PUT" and invalidation <= last.close):

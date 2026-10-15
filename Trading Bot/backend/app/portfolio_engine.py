@@ -41,6 +41,9 @@ class MultiStrategyPaperEngine(PaperEngine):
     def plan_candidate(self,signal,contract,candle):
         return plan_protection(signal,contract,candle,contract["ask"],horizon_minutes=signal["horizon_minutes"])
 
+    def finalize_candidate(self,signal,contract,quantity):
+        return signal
+
     def __init__(self,*args,**kwargs):
         super().__init__(*args,**kwargs)
         self.protection_requests={}; self.protection_results={}
@@ -484,6 +487,7 @@ class MultiStrategyPaperEngine(PaperEngine):
         # Review one-lot evidence even when admission cannot fund a lot; it is
         # explanatory only and cannot reach execution without valid sizing.
         qty=sizing["quantity"] if sizing else contract["lot_size"]; price=contract["ask"]
+        s=self.finalize_candidate(s,contract,qty)
         s["sizing_policy_version"]=SIZING_VERSION
         stop_cost=sizing["stop_cost"] if sizing else self.broker.cost.quote(contract,price,s["stop_price"],qty)["total"]
         target_cost=self.broker.cost.quote(contract,price,s["target_price"],qty)["total"]
@@ -493,7 +497,7 @@ class MultiStrategyPaperEngine(PaperEngine):
         s["entry_economics"]=economics
         specialists=assess_specialists(s,contract,now,risk=risk,reward=reward,
                                        max_quote_age=self.settings.max_quote_age_seconds,
-                                       max_spread=self.settings.max_spread_pct,min_net_reward_risk=self.settings.min_net_reward_risk)
+                                       max_spread=self.settings.max_spread_pct,min_net_reward_risk=getattr(self,'minimum_net_rr',self.settings.min_net_reward_risk))
         review["agents"]=specialists["agents"]
         check("specialist_evidence",not specialists["vetoes"],"; ".join(specialists["vetoes"]) or "Required specialist evidence passed")
         s={**s,"specialist_agents":specialists["agents"],
@@ -518,7 +522,7 @@ class MultiStrategyPaperEngine(PaperEngine):
         if not check("cash",price*qty+buy_cost<=min(self.broker.policy.premium_limit,account["cash"]-self.broker.policy.cash_reserve),"Premium, charges and cash reserve"):
             review["agents"]["Risk Sentinel"].update(status="VETO",evidence=review["checks"]["cash"])
             return None,"Premium and charges breach available cash or reserve"
-        if reward/risk<self.settings.min_net_reward_risk: return None,"Net target reward/risk below configured minimum"
+        if reward/risk<getattr(self,'minimum_net_rr',self.settings.min_net_reward_risk): return None,"Net target reward/risk below configured minimum"
         matched=[t for t in outcomes if t.get("portfolio_version")==self.version and
             t.get("sizing_policy_version")==SIZING_VERSION and
             t.get("decision_policy_version")==REVIEW_VERSION and

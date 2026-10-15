@@ -178,6 +178,145 @@ def test_protection_worker_exits_without_waiting_for_charge_http_or_entry_cycle(
     assert store.get_record('exit_requests',order['id'])['attempts']==1
 
 
+def test_exit_refreshes_observed_bid_after_intent_persistence_delay(tmp_path,monkeypatch):
+    broker,store,clock=plan_account(tmp_path)
+    order=enter(broker,clock,qty=20)
+    original_quote=quote(contract(),clock,bid=95)
+    save=store.save_bundle
+    delayed=[]
+    def delayed_intent(items):
+        if any(namespace=='exit_requests' for namespace,_,_ in items) and not delayed:
+            delayed.append(True)
+            clock['now']+=timedelta(seconds=3)
+        return save(items)
+    monkeypatch.setattr(store,'save_bundle',delayed_intent)
+    current=lambda:quote(contract(),clock,bid=94)
+    trade=broker.close(order['id'],original_quote,'STOP',clock['now'],quote_provider=current)
+    assert trade['exit']==94 and trade['exit_ts']==clock['now'].isoformat()
+    assert trade['reason']=='STOP' and trade['exit_request']['attempts']==1
+    assert not broker.snapshot()['positions']
+    assert len(store.list_records('trades'))==1
+    assert trade['exit_request']['first_requested_at']==original_quote['timestamp']
+
+
+def test_exit_reprepares_exact_fee_when_observed_price_and_depth_change(tmp_path):
+    broker,store,clock=plan_account(tmp_path)
+    order=enter(broker,clock,qty=20)
+    initial=clock['now']
+    calls=[]
+    def slow_fee(c,buy,sell,qty):
+        calls.append((sell,qty))
+        if len(calls)==1: clock['now']+=timedelta(seconds=3)
+        return {'total':20.,'brokerage':20.}
+    broker.cost.quote=slow_fee
+    def observed():
+        return quote(contract(),clock,bid=95 if clock['now']==initial else 94,
+                     qty=20 if clock['now']==initial else 10)
+    trade=broker.close(order['id'],observed(),'STOP',initial,quote_provider=observed)
+    assert calls==[(95.,20),(94.,10)]
+    assert trade['quantity']==10 and trade['exit']==94 and trade['partial']
+    assert trade['exit_ts']==clock['now'].isoformat()
+    assert broker.snapshot()['positions'][0]['qty']==10
+    assert store.get_record('exit_requests',order['id'])['reason']=='STOP'
+
+
+@pytest.mark.parametrize('missing',[False,True])
+def test_exit_refresh_never_relabels_stale_or_missing_depth_as_fresh(tmp_path,missing):
+    broker,store,clock=plan_account(tmp_path)
+    order=enter(broker,clock,qty=20)
+    old=quote(contract(),clock,bid=95)
+    cash=broker.snapshot()['cash']
+    def slow_fee(*args):
+        clock['now']+=timedelta(seconds=3)
+        return {'total':20.,'brokerage':20.}
+    broker.cost.quote=slow_fee
+    observed=lambda: {} if missing and clock['now'].isoformat()!=old['timestamp'] else old
+    with pytest.raises(ValueError,match='fresh'):
+        broker.close(order['id'],old,'STOP',clock['now'],quote_provider=observed)
+    assert broker.snapshot()['cash']==cash and broker.snapshot()['positions'][0]['qty']==20
+    assert not store.list_records('trades')
+    assert store.get_record('exit_requests',order['id'])['status']=='PENDING'
+
+
+@pytest.mark.parametrize('reason,lock',[('Manual review',None),('DAILY_FLATTEN','DAILY_FLATTEN')])
+def test_pending_exit_errors_preserve_manual_and_risk_halts(tmp_path,reason,lock):
+    broker,store,clock=plan_account(tmp_path)
+    order=enter(broker,clock,qty=10)
+    if lock: broker.state['loss_ledger']['lock_reason']=lock
+    broker.control(halted=True,reason=reason)
+    with pytest.raises(ValueError): broker.close(order['id'],{},'STOP',clock['now'])
+    broker.exit_error_halt('Exit pending: protection retry required')
+    assert broker.snapshot()['halt_reason']==reason
+    clock['now']+=timedelta(seconds=1)
+    broker.close(order['id'],quote(contract(),clock,bid=95),'STOP',clock['now'])
+    assert not broker.snapshot()['positions']
+    assert broker.snapshot()['halted'] and broker.snapshot()['halt_reason']==reason
+    assert broker.snapshot()['loss_ledger']['lock_reason']==lock
+
+
+def test_other_worker_completed_exit_cannot_latch_an_exit_pending_halt(tmp_path):
+    broker,_,clock=plan_account(tmp_path)
+    order=enter(broker,clock,qty=10)
+    clock['now']+=timedelta(seconds=1)
+    broker.close(order['id'],quote(contract(),clock,bid=95),'STOP',clock['now'])
+    broker.exit_error_halt('Exit pending: protection retry required')
+    assert not broker.snapshot()['positions'] and not broker.snapshot()['halted']
+
+
+def test_diagnostic_journal_failure_is_visible_without_halting_execution(tmp_path,monkeypatch):
+    import sqlite3
+    from types import SimpleNamespace
+    from app.runtime_health import execution_health
+    from app.telemetry.event_bus import event_bus
+    broker,store,clock=plan_account(tmp_path)
+    engine=PaperEngine(Settings(_env_file=None),store,None,broker,clock=lambda:clock['now'])
+    engine.threads=[SimpleNamespace(name='paper-engine',is_alive=lambda:True)]
+    engine.status['last_cycle']=clock['now'].isoformat()
+    record=store.record_event
+    monkeypatch.setattr(store,'record_event',lambda *a,**k:(_ for _ in ()).throw(sqlite3.OperationalError('Store write lock busy')))
+    item={'id':'diagnostic-failure','agent':'Scanner','symbol':'NIFTY','status':'WAITING',
+          'summary':'Waiting for confirmed setup','timestamp':clock['now'].isoformat()}
+    engine.publish(item)
+    health=execution_health(engine,broker,clock['now'])
+    assert health['operational'] and health['healthy']
+    assert health['advisory_errors']['event_journal_error']=='OperationalError'
+    assert engine.status['event_journal']['failed_events']==1
+    assert not engine.status['event_journal']['history_complete']
+    assert engine.status['scans']['NIFTY']['reason']==item['summary']
+    assert event_bus.recent(1)[0]['id']==item['id']
+    assert not broker.snapshot()['halted'] and not store.list_records('trades')
+    monkeypatch.setattr(store,'record_event',record)
+    engine.publish({**item,'id':'diagnostic-recovered'})
+    assert engine.status['event_journal_error'] is None
+    assert store.get_record('events','diagnostic-recovered')['summary']==item['summary']
+    assert engine.status['event_journal']['failed_events']==1  # Historical gap remains visible.
+
+
+def test_diagnostic_event_write_is_bounded_behind_a_busy_writer(tmp_path):
+    import threading
+    broker,store,clock=plan_account(tmp_path)
+    engine=PaperEngine(Settings(_env_file=None),store,None,broker,clock=lambda:clock['now'])
+    locked=threading.Event(); release=threading.Event(); done=threading.Event()
+    def hold_lock():
+        with store._write_lock:
+            locked.set(); release.wait(3)
+    def publish():
+        engine.publish({'id':'bounded-event','agent':'Scanner','symbol':'NIFTY',
+            'status':'WAITING','summary':'Waiting','timestamp':clock['now'].isoformat()})
+        done.set()
+    holder=threading.Thread(target=hold_lock); writer=threading.Thread(target=publish)
+    holder.start()
+    try:
+        assert locked.wait(1)
+        writer.start()
+        assert done.wait(1),'Diagnostic journal blocked execution behind an unrelated writer'
+        assert engine.status['event_journal_error']=='OperationalError'
+        assert not broker.snapshot()['halted']
+    finally:
+        release.set(); holder.join(3)
+        if writer.ident is not None: writer.join(3)
+
+
 def test_exit_survives_rotation_restart_reconnect_and_partial_liquidation(tmp_path,monkeypatch):
     broker,store,clock=plan_account(tmp_path)
     c={**contract(),'security_id':'999','exchange':'NSE'}

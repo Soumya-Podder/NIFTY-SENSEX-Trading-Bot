@@ -106,9 +106,13 @@ class QuoteRecorder:
                         pending_count=len(batch)
                         with connection:
                             connection.executemany('INSERT INTO observations VALUES(?,?,?,?,?,?)',batch)
+                            # Clear only the capacity error after a real write;
+                            # dropped observations remain recorded as gaps.
+                            recovered_error=None if self.error=='STORAGE_LIMIT' else self.error
                             self.persisted+=len(batch); self.last_write=now_ist().isoformat()
                             connection.execute('UPDATE recorder_runs SET persisted=?,dropped=?,last_drop=?,error=? WHERE id=?',
-                                               (self.persisted,self.dropped,self.last_drop,self.error,self.run_id))
+                                               (self.persisted,self.dropped,self.last_drop,recovered_error,self.run_id))
+                        with self.lock: self.error=recovered_error
                         pending_count=0
                 elif self.dropped!=saved_dropped:
                     with connection:

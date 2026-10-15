@@ -108,6 +108,40 @@ def test_failed_writer_stops_accepting_observations(tmp_path,monkeypatch):
     assert not recorder.status()['worker_alive']
 
 
+def test_storage_recovery_requires_durable_write_and_retains_capture_gap(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    space={'free':0}
+    monkeypatch.setattr('app.quote_recorder.shutil.disk_usage',lambda _:SimpleNamespace(free=space['free']))
+    recorder=QuoteRecorder(tmp_path/'recover.db',min_free_bytes=0)
+    recorder.start()
+    try:
+        dropped=recorder.record('underlying',{'symbol':'NIFTY','ltp':100})
+        deadline=time.monotonic()+5
+        while recorder.status()['error']!='STORAGE_LIMIT' and time.monotonic()<deadline:
+            time.sleep(.01)
+        before=recorder.status()
+        assert before['error']=='STORAGE_LIMIT' and before['dropped_this_run']==1
+        assert before['worker_alive'] and recorder.read(dropped) is None
+
+        space['free']=10**12
+        # Available space alone does not establish that recording recovered.
+        assert recorder.status()['error']=='STORAGE_LIMIT'
+        saved=recorder.record('underlying',{'symbol':'NIFTY','ltp':101})
+        deadline=time.monotonic()+5
+        while recorder.status()['error'] and time.monotonic()<deadline:
+            time.sleep(.01)
+        after=recorder.status()
+        assert after['error'] is None and after['persisted_this_run']==1
+        assert after['dropped_this_run']==1 and after['last_drop']==before['last_drop']
+        assert recorder.read(saved)['quote']['ltp']==101
+        assert not after['complete_exchange_history_verified']
+    finally:
+        recorder.stop()
+    with sqlite3.connect(recorder.path) as connection:
+        assert connection.execute('SELECT persisted,dropped,last_drop,error FROM recorder_runs').fetchone()==(
+            1,1,before['last_drop'],None)
+
+
 def test_live_sized_burst_drains_without_queue_drops(tmp_path):
     recorder=QuoteRecorder(tmp_path/'burst.db',capacity=25000,batch_size=2000,min_free_bytes=0)
     recorder.start()

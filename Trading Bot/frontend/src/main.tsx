@@ -227,6 +227,7 @@ function App() {
     </div>
 
     <div className="topbar-right">
+     <a className="mode-pill" href="/api/credentials/form" target="_blank" rel="noopener noreferrer">Update Dhan token</a>
      <ThemeToggle />
      <span className={`terminal-connection ${online ? "connected" : "disconnected"}`}><i aria-hidden="true" />{online ? "Engine connected" : connectionChecked ? "Engine offline" : "Connecting"}</span>
      <div className={`market-pill ${online && data?.market?.live ? "is-live" : ""}`}>

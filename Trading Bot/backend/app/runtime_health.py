@@ -38,7 +38,7 @@ def execution_health(engine, broker, now=None):
         health.get("error")==errors["data_error"] for health in engine.status.get("data_symbols",{}).values())
     operational=fresh and protection_fresh and bool(threads) and not dead and not {k:v for k,v in errors.items()
         if k!="entry_error" and not (k=="data_error" and symbol_error)} and broker_health["healthy"]
-    advisory={key:engine.status[key] for key in ("feedback_error","context_errors","signal_journal_error","management_error","paper_learning_error","fee_preparation_error","recovery_journal_error") if engine.status.get(key)}
+    advisory={key:engine.status[key] for key in ("feedback_error","context_errors","signal_journal_error","event_journal_error","management_error","paper_learning_error","fee_preparation_error","recovery_journal_error") if engine.status.get(key)}
     renewal=engine.status.get("credential_renewal") or {}
     if renewal.get("status") in {"EXPIRED","RENEWAL_FAILED"}: advisory["credential_renewal"]=renewal
     return {"healthy":healthy,"operational":operational,"heartbeat_age_seconds":age,"dead_workers":dead,

@@ -35,7 +35,11 @@ def test_estimated_fee_replay_is_visible_but_never_verified(once_per_session):
     assert not any("current lot sizes" in s for s in view["assumptions"])
 
 
-def test_broker_receipts_reconcile_to_exact_historical_overrides():
+@pytest.mark.parametrize("age",[0,15])
+def test_broker_receipts_reconcile_to_exact_historical_overrides(monkeypatch,age):
+    frozen=pd.Timestamp("2026-09-18T12:00:00+05:30")
+    monkeypatch.setattr(pd.Timestamp,"now",lambda **kwargs:frozen)
+    day=str((frozen-pd.Timedelta(days=age)).date())
     class Calculator:
         def quote_buy(self, contract, buy_price, qty):
             return {"brokerage":20,"exchange":2,"stt":0,"sebi":.01,"ipft":.02,
@@ -44,9 +48,9 @@ def test_broker_receipts_reconcile_to_exact_historical_overrides():
             return {"brokerage":40,"exchange":5,"stt":3,"sebi":.02,"ipft":.04,
                     "stamp_duty":0,"gst":8,"total":56.06,"request_fingerprint":"round"}
     trade={"exchange":"NSE","security_id":1,"lot_size":65,"quantity":65,
-           "entry":100.,"exit":110.,"entry_ts":"2026-09-18T10:00:00+05:30"}
-    observed=broker_cost_receipts(trade,Calculator(),"2026-09-18")
-    schedule={**fee_scenario("2026-09-18"),"observed_costs":observed}
+           "entry":100.,"exit":110.,"entry_ts":day+"T10:00:00+05:30"}
+    observed=broker_cost_receipts(trade,Calculator(),day)
+    schedule={**fee_scenario(day),"observed_costs":observed}
     contract={"charge_schedule":schedule}
     buy=CostModel.historical(contract,100.,65,"buy",trade["entry_ts"])
     sell=CostModel.historical(contract,110.,65,"sell",trade["entry_ts"])
@@ -57,6 +61,15 @@ def test_broker_receipts_reconcile_to_exact_historical_overrides():
         for key,value in observed.items()}}
     with pytest.raises(ValueError,match="receipt_invalid"):
         CostModel.historical({"charge_schedule":corrupted},100.,65,"buy",trade["entry_ts"])
+
+
+@pytest.mark.parametrize("age",[16,-1])
+def test_broker_receipts_reject_old_and_future_trade_dates_before_calculator_access(monkeypatch,age):
+    frozen=pd.Timestamp("2026-09-18T12:00:00+05:30")
+    monkeypatch.setattr(pd.Timestamp,"now",lambda **kwargs:frozen)
+    day=str((frozen-pd.Timedelta(days=age)).date())
+    with pytest.raises(ValueError,match="cannot certify"):
+        broker_cost_receipts({},None,day)
 
 
 def test_strategy_replay_receipts_do_not_leak_into_another_strategy():

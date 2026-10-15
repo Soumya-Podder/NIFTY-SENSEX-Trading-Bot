@@ -6,6 +6,7 @@ from app.config import Settings
 from app.backtest.data import dataset_path
 from app.backtest.jobs import resolve_backtest_budgets
 from app.backtest.jobs import ARCHIVE_STRIKE_OFFSETS,resolve_backtest_start
+from app.autonomous_policy import VERSION
 
 
 def manager(tmp_path):
@@ -36,7 +37,7 @@ def test_autonomous_observed_job_reaches_shared_replay_and_saves_report(tmp_path
     assert saved["status"] == "research_partial" and saved["progress"] == 100
     report=jobs.store.get_record("reports",saved["report_id"])
     assert report["source"] == "autonomous_observed_quote_replay"
-    assert report["policy_version"] == "autonomous-paper-v1" and not report["trades"]
+    assert report["policy_version"] == VERSION and not report["trades"]
     assert jobs.store.get_record("backtest","latest")["report_id"] == job["id"]
     assert not jobs.store.list_records("learning_runs")
 

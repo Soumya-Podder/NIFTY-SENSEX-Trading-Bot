@@ -165,6 +165,10 @@ class Store:
         stamp=datetime.now(timezone.utc).isoformat()
         items=list(items)
         account_write=any((namespace=="paper" or namespace.endswith("/paper")) and key=="account" for namespace,key,_ in items)
+        # Large diagnostic payloads must not occupy the shared writer lock
+        # during Python serialization while a protective account write waits.
+        encoded=[(namespace,str(key),json.dumps(json_safe(payload),allow_nan=False),stamp)
+                 for namespace,key,payload in items]
         wait=.25 if account_write else timeout
         attempts=1 if wait is not None else 3
         for attempt in range(attempts):
@@ -174,9 +178,9 @@ class Store:
                 try:
                     with self._conn(timeout=30 if wait is None else wait) as c:
                         c.execute("BEGIN IMMEDIATE")
-                        for namespace,key,payload in items:
+                        for row in encoded:
                             c.execute("INSERT INTO records VALUES(?,?,?,?) ON CONFLICT(namespace,key) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at",
-                                      (namespace,str(key),json.dumps(json_safe(payload),allow_nan=False),stamp))
+                                      row)
                 finally: self._write_lock.release()
                 return
             except sqlite3.OperationalError as e:
@@ -233,8 +237,8 @@ class Store:
         return {"responses":row[0],"compressed_bytes":row[1],"retained_responses":row[2],
                 "storage":"backend/trading_bot.db · compressed SQLite history_cache", "retention":"Historical backtest responses retained without automatic expiry; quotes and metadata retain their refresh rules"}
 
-    def record_event(self, event):
-        self.put_record("events",event["id"],event)
+    def record_event(self, event, *, timeout=None):
+        self.save_bundle([("events",event["id"],event)],timeout=timeout)
 
     def pending_paper_feedback(self,limit=100):
         with self._conn() as c:

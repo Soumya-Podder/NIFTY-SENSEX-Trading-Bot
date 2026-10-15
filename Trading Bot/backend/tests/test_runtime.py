@@ -123,6 +123,34 @@ def test_option_stream_requires_depth_and_explicit_freshness():
     assert not quote_is_fresh({'quote_update_timestamp':None,'exchange_timestamp':q['timestamp'],'source':'dhan_quote'})
 
 
+@pytest.mark.parametrize('bad_field', ['exchange_segment', 'depth', 'LTP'])
+def test_malformed_packet_does_not_discard_later_valid_book(monkeypatch,bad_field):
+    import json
+    feed=DhanMarketData('test','test','NIFTY')
+    monkeypatch.setattr(feed,'start',lambda:None)
+    c={**contract(),'security_id':'999','exchange':'NSE'}
+    feed.subscribe_options([c]); feed.connected=True
+    packet={'security_id':999,'exchange_segment':2,'type':'Full Data','LTP':'100',
+        'sequence':42,'LTT':'2026-09-04T10:00:00+05:30',
+        'depth':[{'bid_price':'99','ask_price':'100','bid_quantity':20,'ask_quantity':30}]}
+    malformed={**packet,bad_field:'secret-invalid-field'}
+    if bad_field=='depth':
+        malformed['depth']=[{**packet['depth'][0],'bid_quantity':'secret-invalid-field'}]
+
+    feed._on_message(None,malformed)
+    assert not feed.executable_quotes()
+    assert (2,'999') not in feed.last_sequence
+    feed._on_message(None,[malformed,packet])
+
+    quote=feed.executable_quotes()[c['contract_id']]
+    assert quote['bid']==99 and quote['ask']==100 and feed.last_sequence[(2,'999')]==42
+    assert quote_is_fresh(quote,datetime.fromisoformat(quote['timestamp']))
+    status=feed.snapshot()
+    assert status['connected'] and status['error'] is None and status['packet_errors']==2
+    assert set(status['last_packet_error'])=={'type','received_at'}
+    assert 'secret-invalid-field' not in json.dumps(status['last_packet_error'])
+
+
 def test_execution_snapshot_returns_underlying_and_options_atomically():
     feed=DhanMarketData('test','test','NIFTY,SENSEX')
     feed.latest['NIFTY']={'symbol':'NIFTY','ltp':24000}

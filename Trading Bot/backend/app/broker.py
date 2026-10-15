@@ -106,6 +106,12 @@ class PaperBroker:
             if not self.state["halted"]: self.control(halted=True,reason=reason)
             return False
 
+    def exit_error_halt(self,reason):
+        """Pause failed exits without replacing a manual or risk halt."""
+        with self.lock:
+            if self.state["positions"] and not self.state["halted"]:
+                self.control(halted=True,reason=reason)
+
     def new_session(self,now=None):
         day=str(local_time(now or now_ist()).date())
         with self.lock:
@@ -209,6 +215,11 @@ class PaperBroker:
             stop=signal.get("stop_price"); target=signal.get("target_price")
             if not isinstance(stop,(float,int)) or not math.isfinite(stop) or not 0<stop<price:
                 raise ValueError("A predeclared market-derived premium stop is required; percentage fallback is disabled")
+            min_stop=(signal.get("protection_evidence") or {}).get("min_stop",0)
+            if not isinstance(min_stop,(float,int)) or not math.isfinite(min_stop) or min_stop<0:
+                raise ValueError("Invalid observed option ATR stop floor")
+            if price-stop+1e-8<min_stop:
+                raise ValueError("Final premium moved inside the option ATR stop floor; rebuild protection before entry")
             if not isinstance(target,(float,int)) or not math.isfinite(target) or target<=price:
                 raise ValueError("A predeclared premium target is required")
             if self.policy:
@@ -304,7 +315,7 @@ class PaperBroker:
                     "status":"PENDING","remaining_quantity":position["qty"]}
                 self._persist(("exit_requests",position_id,dict(position["exit_request"])))
 
-    def close(self,position_id,quote,reason,now=None):
+    def close(self,position_id,quote,reason,now=None,*,quote_provider=None):
         """Persist exit intent before attempting a fill; resume the original reason."""
         now=local_time(now or self.clock())
         with self.lock:
@@ -319,16 +330,35 @@ class PaperBroker:
         # A legacy position may lack a cached exit prequote. Fetch its fee
         # without holding the ledger lock; the fill rechecks quantity and age.
         try:
-            prepared=None
-            if quote and quote.get("contract_id")==preview["contract_id"]:
-                lot=int(preview["lot_size"])
-                qty=min(preview["qty"],int(quote.get("bid_qty",0))//lot*lot)
-                if qty>0 and float(quote.get("bid",0))>0:
-                    fast=getattr(self.cost,"fast_exit_estimate",None)
-                    fee=fast(preview,qty) if fast else None
-                    if fee is None: fee=self.cost.quote(preview,0,float(quote["bid"]),qty)
-                    prepared=(qty,fee)
-            return self._close_fill(position_id,quote,exit_reason,now,prepared_fee=prepared)
+            # Intent persistence and legacy fee preparation may outlive the
+            # original quote. Refresh from the observed feed, never its clock.
+            for attempt in range(2):
+                if quote_provider: quote=quote_provider() or {}
+                prepared=None
+                if quote and quote.get("contract_id")==preview["contract_id"]:
+                    lot=int(preview["lot_size"])
+                    qty=min(preview["qty"],int(quote.get("bid_qty",0))//lot*lot)
+                    if qty>0 and float(quote.get("bid",0))>0:
+                        fast=getattr(self.cost,"fast_exit_estimate",None)
+                        fee=fast(preview,qty) if fast else None
+                        if fee is None: fee=self.cost.quote(preview,0,float(quote["bid"]),qty)
+                        prepared=(qty,fee)
+                if quote_provider and prepared:
+                    current=quote_provider() or {}
+                    current_qty=min(preview["qty"],int(current.get("bid_qty",0))//int(preview["lot_size"])*int(preview["lot_size"]))
+                    # Exact fees belong to the prepared price/quantity. A fast
+                    # entry prequote reserve is independent of the current bid.
+                    if current.get("contract_id")==preview["contract_id"] and current_qty>0:
+                        fast=getattr(self.cost,"fast_exit_estimate",None)
+                        fee=fast(preview,current_qty) if fast else None
+                        if fee is not None: prepared=(current_qty,fee)
+                        elif (current_qty!=prepared[0] or current.get("bid")!=quote.get("bid")) and attempt==0:
+                            continue
+                        elif current_qty!=prepared[0] or current.get("bid")!=quote.get("bid"):
+                            raise ValueError("Exit pending: depth changed during fee preparation")
+                    quote=current
+                fill_now=local_time(self.clock()) if quote_provider else now
+                return self._close_fill(position_id,quote,exit_reason,fill_now,prepared_fee=prepared)
         except Exception as exc:
             with self.lock:
                 p=next((p for p in self.state["positions"] if p["id"]==position_id),None)
@@ -339,7 +369,8 @@ class PaperBroker:
                         "quote_timestamp":quote.get("timestamp") if quote else None})
                     del failures[:-8]
                     p["exit_request"].update(last_error=str(exc)[:300],status="PENDING")
-                    self.state.update(halted=True,halt_reason="Exit pending: waiting for executable depth or persistence recovery")
+                    if not self.state["halted"]:
+                        self.state.update(halted=True,halt_reason="Exit pending: waiting for executable depth or persistence recovery")
                     self._persist(("exit_requests",position_id,dict(p["exit_request"])))
             raise
 

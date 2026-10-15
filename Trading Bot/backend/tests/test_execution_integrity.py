@@ -129,3 +129,33 @@ def test_structural_stop_is_not_tightened_to_force_risk_budget():
     assert protected['stop_price'] < 80
     assert (100-protected['stop_price'])*100 > 600
     # Risk admission must reject the oversized position, not move its stop.
+
+
+def test_final_quote_cannot_undercut_atr_floor_and_next_candidate_can_trade(tmp_path):
+    broker,store,clock=plan_account(tmp_path)
+    c=contract()
+    from tests.test_paper import signal
+    planned=plan_protection({**signal(),'retest_timestamp':clock['now'].isoformat()},
+                            c,{**c,'low':98},100,min_stop=5)
+    with pytest.raises(ValueError,match='ATR stop floor; rebuild'):
+        broker.place_order(contract=c,quote=quote(c,clock,bid=97.9,ask=98),
+                           quantity=10,signal=planned,now=clock['now'])
+    assert not store.list_records('orders')
+    assert not broker.state['consumed_signals'] and not broker.state['halted']
+    assert planned['stop_price']==95
+    # A fresh review retains the observed stop and restores the minimum room.
+    order=broker.place_order(contract=c,quote=quote(c,clock,bid=99.9,ask=100),
+                             quantity=10,signal=planned,now=clock['now'])
+    position=broker.positions()['positions'][0]
+    assert order['status']=='FILLED' and position['entry']-position['stop']>=5
+
+
+@pytest.mark.parametrize('floor',[float('nan'),float('inf'),-1])
+def test_invalid_atr_floor_cannot_create_a_paper_fill(tmp_path,floor):
+    broker,store,clock=plan_account(tmp_path)
+    from tests.test_paper import signal
+    planned={**signal(),'protection_evidence':{'min_stop':floor}}
+    with pytest.raises(ValueError,match='Invalid observed option ATR'):
+        broker.place_order(contract=contract(),quote=quote(contract(),clock),
+                           quantity=10,signal=planned,now=clock['now'])
+    assert not store.list_records('orders') and not broker.state['halted']

@@ -287,6 +287,30 @@ def token(now,hours):
     return 'test.'+base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip('=')+'.test'
 
 
+def test_slow_diagnostic_serialization_does_not_block_account_commit(tmp_path,monkeypatch):
+    from app.store import Store
+    from app import store as module
+    store=Store(tmp_path/'serialization.db')
+    original=module.json_safe
+    entered=threading.Event();release=threading.Event();failures=[]
+    def slow(payload):
+        if payload=={'slow':True}:
+            entered.set();release.wait(5)
+        return original(payload)
+    monkeypatch.setattr(module,'json_safe',slow)
+    def diagnostic():
+        try:store.put_record('diagnostics','slow',{'slow':True})
+        except Exception as exc:failures.append(exc)
+    worker=threading.Thread(target=diagnostic);worker.start()
+    try:
+        assert entered.wait(2)
+        store.save_bundle([('paper','account',{'durable':True})])
+        assert store.get_record('paper','account')['durable']
+    finally:
+        release.set();worker.join(5)
+    assert not worker.is_alive() and not failures
+
+
 def test_renewal_saves_only_token_and_runtime_reloads_rest_and_feed(tmp_path,monkeypatch):
     from app.credential_recovery import renew_project_token
     from app.config import current_credentials
@@ -503,14 +527,15 @@ def test_unchanged_failed_repair_does_not_flood_durable_history(tmp_path,monkeyp
     ({},True),
     ({'runtime':{'heartbeat_age_seconds':5}},False),
     ({'runtime':{'heartbeat_age_seconds':None}},False),
-    ({'broker':{'healthy':False,'mode':'paper'}},False),
+    ({'broker':{'healthy':False,'mode':'paper'}},True),
     ({'broker':{'healthy':True,'mode':'live'}},False),
-    ({'readiness':{'exit_status':'WAITING_FOR_DEPTH','positions':[{'pending':True}]}},False),
+    ({'runtime':{'heartbeat_age_seconds':2,'protection_heartbeat_age_seconds':2},
+        'readiness':{'exit_status':'WAITING_FOR_DEPTH','positions':[{'pending':True}]}},False),
     ({'readiness':{'exit_status':'NO_POSITION'}},False),
     ({'app':'unavailable'},False),
     ({'app':'degraded'},True),
 ])
-def test_supervisor_restarts_stalled_execution_only_with_verified_flat_paper_account(change,stalled):
+def test_supervisor_detects_paper_worker_stall_independently_of_storage_health(change,stalled):
     from paper_service import execution_stalled
     health={'app':'healthy','runtime':{'heartbeat_age_seconds':65},
         'broker':{'healthy':True,'mode':'paper'},'readiness':{'exit_status':'NO_POSITION','positions':[]}}
@@ -543,11 +568,34 @@ def test_alive_worker_does_not_prove_a_stale_execution_loop_recovered(tmp_path):
     (None,['paper-protection'],True),(None,[],False)])
 def test_occupied_account_restart_uses_protection_liveness_not_missing_depth(protection_age,dead,stalled):
     from paper_service import execution_stalled
-    health={'app':'degraded','runtime':{'heartbeat_age_seconds':65,
+    health={'app':'degraded','runtime':{'heartbeat_age_seconds':2,
         'protection_heartbeat_age_seconds':protection_age,'dead_workers':dead},
         'broker':{'healthy':True,'mode':'paper'},
         'readiness':{'exit_status':'WAITING_FOR_DEPTH','positions':[{'pending':True}]}}
     assert execution_stalled(health) is stalled
+
+
+@pytest.mark.parametrize('positions',[[],[{'pending':True}]])
+def test_supervisor_recovers_stalled_execution_even_with_live_protection_and_storage_error(positions):
+    from paper_service import restart_reason
+    health={'app':'degraded','runtime':{'heartbeat_age_seconds':65,
+        'protection_heartbeat_age_seconds':2,'dead_workers':[]},
+        'broker':{'healthy':False,'mode':'paper','persistence_error':'OperationalError'},
+        'readiness':{'exit_status':'WAITING_FOR_DEPTH' if positions else 'NO_POSITION','positions':positions}}
+    assert restart_reason(health,0,100)=='STALLED_EXECUTION_OR_PROTECTION'
+
+
+@pytest.mark.parametrize('worker,positions',[
+    ('paper-engine',[]),('paper-engine',[{'pending':True}]),('paper-protection',[{'pending':True}])])
+def test_supervisor_recovers_worker_that_never_emits_first_heartbeat_after_startup_grace(worker,positions):
+    from paper_service import restart_reason
+    runtime={'heartbeat_age_seconds':2,'protection_heartbeat_age_seconds':2,
+        'workers':[{'name':worker,'alive':True}],'dead_workers':[]}
+    runtime['heartbeat_age_seconds' if worker=='paper-engine' else 'protection_heartbeat_age_seconds']=None
+    health={'app':'degraded','runtime':runtime,'broker':{'healthy':True,'mode':'paper'},
+        'readiness':{'exit_status':'WAITING_FOR_DEPTH' if positions else 'NO_POSITION','positions':positions}}
+    assert restart_reason(health,0,89) is None
+    assert restart_reason(health,0,100)=='STALLED_EXECUTION_OR_PROTECTION'
 
 
 def test_stalled_protection_blocks_entry_even_when_main_worker_is_current(tmp_path):
@@ -619,9 +667,10 @@ def test_supervisor_history_is_bounded_and_deduplicates_unchanged_state(tmp_path
     assert len(paper_service.supervisor_status()['history'])==50
 
 
-@pytest.mark.parametrize('occupied,blocked,unowned',[(False,False,False),(True,False,False),
-    (True,True,False),(True,False,True)])
-def test_supervisor_timeout_restarts_only_owned_api_then_verifies_new_workers(tmp_path,monkeypatch,occupied,blocked,unowned):
+@pytest.mark.parametrize('occupied,blocked,unowned,backoff',[(False,False,False,False),(True,False,False,False),
+    (True,True,False,False),(True,False,True,False),(True,False,False,True)])
+@pytest.mark.parametrize('failure',['timeout','stalled_storage'])
+def test_supervisor_restarts_only_owned_api_then_verifies_new_workers(tmp_path,monkeypatch,occupied,blocked,unowned,backoff,failure):
     import paper_service,msvcrt
     from tests.test_paper import enter
     broker,store,clock=plan_account(tmp_path)
@@ -637,6 +686,8 @@ def test_supervisor_timeout_restarts_only_owned_api_then_verifies_new_workers(tm
     monkeypatch.setattr(paper_service,'datetime',SimpleNamespace(now=lambda _:clock['now']))
     read_status=paper_service.supervisor_status
     monkeypatch.setattr(paper_service,'supervisor_status',lambda:read_status(root/'status.json'))
+    if backoff:
+        (root/'status.json').write_text(__import__('json').dumps({'restart_times':[paper_service.time.time()]}))
     monkeypatch.setattr(msvcrt,'locking',lambda *a:None)
     requests={'count':0}; started=[]; stopped=[]; ticks={'value':0}; sleeps={'count':0}
     def monotonic():
@@ -653,10 +704,14 @@ def test_supervisor_timeout_restarts_only_owned_api_then_verifies_new_workers(tm
         def __exit__(self,*args): pass
     def request(*args,**kwargs):
         requests['count']+=1
-        if requests['count']<=6: raise TimeoutError()
+        if requests['count']==1 or failure=='timeout' and requests['count']<=6: raise TimeoutError()
         return Response()
     monkeypatch.setattr(paper_service.urllib.request,'urlopen',request)
-    monkeypatch.setattr(paper_service.json,'load',lambda _: {'app':'healthy','runtime':{'healthy':True}})
+    stalled={'app':'degraded','runtime':{'heartbeat_age_seconds':65,
+        'protection_heartbeat_age_seconds':65},'broker':{'healthy':False,'mode':'paper'},
+        'readiness':{'positions':committed['positions'],'exit_status':'WAITING_FOR_DEPTH' if occupied else 'NO_POSITION'}}
+    monkeypatch.setattr(paper_service.json,'load',lambda _:stalled if failure=='stalled_storage' and requests['count']<=6
+        else {'app':'healthy','runtime':{'healthy':True}})
     import socket
     class Socket:
         def __enter__(self): return self
@@ -671,9 +726,11 @@ def test_supervisor_timeout_restarts_only_owned_api_then_verifies_new_workers(tm
     with pytest.raises(Finished): paper_service.main()
     if unowned:
         assert not started and not stopped
-    elif blocked:
+    elif blocked or backoff:
         assert len(started)==1 and not stopped
-        assert paper_service.supervisor_status()['state']=='BLOCKED'
+        status=paper_service.supervisor_status()
+        assert status['state']=='RUNNING'
+        assert any(row['state']==('BACKOFF' if backoff else 'BLOCKED') for row in status['history'])
     else:
         assert len(started)==2 and stopped==[started[0]]
         assert paper_service.supervisor_status()['state']=='RECOVERED'

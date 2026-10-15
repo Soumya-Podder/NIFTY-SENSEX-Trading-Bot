@@ -19,6 +19,20 @@ ROOT=Path(__file__).resolve().parent
 STATUS=ROOT/'.paper_service.status.json'
 
 
+def maintain_session_power(now, setter=None):
+    """Prevent automatic idle sleep during monitoring; do not change OS settings.
+
+    Explicit sleep, closing a lid, shutdown and network outages still need
+    operator attention. ES_DISPLAY_REQUIRED is deliberately not requested.
+    """
+    active=now.weekday()<5 and '09:10'<=now.strftime('%H:%M')<'15:35'
+    if setter is None:
+        if os.name!='nt': return False
+        import ctypes
+        setter=ctypes.windll.kernel32.SetThreadExecutionState
+    return bool(setter(0x80000000 | (0x00000001 if active else 0)))
+
+
 def durable_account(path=ROOT/'trading_bot.db'):
     """Read committed paper state without creating, repairing or changing the ledger."""
     try:
@@ -56,19 +70,26 @@ def record_status(state,reason,restarts):
     except OSError: pass  # Diagnostic failure cannot hold up held-contract recovery.
 
 def execution_stalled(health):
-    """Missing quotes are not a stall. Observe protection separately when occupied."""
+    """Missing quotes are not a stall; both owned paper loops must progress."""
     runtime=health.get('runtime',{})
     age=runtime.get('heartbeat_age_seconds')
     readiness=health.get('readiness',{})
     broker=health.get('broker',{})
-    if health.get('app') not in {'healthy','degraded'} or broker.get('healthy') is not True or broker.get('mode')!='paper': return False
+    # A persistence error must not suppress a genuine worker stall. The caller
+    # still verifies committed paper state before terminating the owned API.
+    if health.get('app') not in {'healthy','degraded'} or broker.get('mode')!='paper': return False
     positions=readiness.get('positions')
     if not isinstance(positions,list): return False
+    dead=runtime.get('dead_workers',[])
+    workers={worker.get('name') for worker in runtime.get('workers',[]) if isinstance(worker,dict)}
+    execution_stale=('paper-engine' in dead or isinstance(age,(float,int)) and age>60 or
+        age is None and 'paper-engine' in workers)
     if not positions:
-        return readiness.get('exit_status')=='NO_POSITION' and isinstance(age,(float,int)) and age>60
+        return readiness.get('exit_status')=='NO_POSITION' and execution_stale
     protection_age=runtime.get('protection_heartbeat_age_seconds')
-    return ('paper-protection' in runtime.get('dead_workers',[]) or
-        isinstance(protection_age,(float,int)) and protection_age>60)
+    return (execution_stale or 'paper-protection' in dead or
+        isinstance(protection_age,(float,int)) and protection_age>60 or
+        protection_age is None and 'paper-protection' in workers)
 
 
 def restart_reason(health,unresponsive_seconds,process_age):
@@ -103,6 +124,7 @@ def main():
         if isinstance(stamp,(float,int)) and 0<=time.time()-stamp<3600]
     while True:
         now=datetime.now(ZoneInfo('Asia/Kolkata'))
+        maintain_session_power(now)
         health={}
         try:
             with urllib.request.urlopen('http://127.0.0.1:8080/api/health',timeout=3) as response:
@@ -131,7 +153,7 @@ def main():
         if recovering and health.get('runtime',{}).get('healthy') is True and owned:
             record_status('RECOVERED','New paper workers verified; positions/exits retain fresh-depth gates',restarts)
             recovering=False
-        elif owned and health.get('runtime',{}).get('healthy') is True and supervisor_status().get('state')=='STARTING':
+        elif owned and health.get('runtime',{}).get('healthy') is True and supervisor_status().get('state') in {'STARTING','BLOCKED','BACKOFF'}:
             record_status('RUNNING','Owned paper workers verified',restarts)
         # Start early enough to load metadata/feed; the engine enforces 09:15.
         # Keep supervising after close to recover/manage pending observed exits.
@@ -142,7 +164,7 @@ def main():
             with socket.socket() as probe:
                 occupied=probe.connect_ex(('127.0.0.1',8080))==0
             if not occupied and (child is None or child.poll() is not None):
-                child=subprocess.Popen([sys.executable,'-B','-m','uvicorn','app.main:app','--host','127.0.0.1','--port','8080','--no-access-log'],
+                child=subprocess.Popen([sys.executable,'-B','-m','uvicorn','app.main:app','--host','127.0.0.1','--port','8080','--no-access-log','--no-proxy-headers'],
                     cwd=ROOT,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
                     creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
                 started=time.monotonic(); last_response=started

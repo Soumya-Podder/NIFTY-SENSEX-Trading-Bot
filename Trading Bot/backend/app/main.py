@@ -6,6 +6,7 @@ from typing import Literal
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from .token_update import router as token_router, trusted_request
 from pydantic import BaseModel, Field, ConfigDict
 from .config import settings,current_credentials
 from .store import Store, json_safe
@@ -107,16 +108,24 @@ async def lifespan(app):
 
 
 app=FastAPI(title="Options Paper Lab",version="4.0.0",lifespan=lifespan)
+app.include_router(token_router)
 ORIGINS={settings.web_origin,"http://127.0.0.1:5174","http://localhost:5174"}
 app.add_middleware(CORSMiddleware,allow_origins=list(ORIGINS),allow_methods=["GET","POST"],allow_headers=["Content-Type"])
 
 
 @app.middleware("http")
 async def local_mutations(request:Request,call_next):
-    if request.method=="POST" and request.headers.get("origin") and request.headers["origin"] not in ORIGINS:
+    if request.headers.get('host', '').lower().endswith('.ts.net'):
+        if request.url.path not in {'/api/credentials/form', '/api/credentials/token'} or not trusted_request(request, mutation=request.method=='POST'):
+            from fastapi.responses import JSONResponse
+            return JSONResponse({'detail':'Private token access only'},status_code=403)
+    if request.method=="POST" and request.headers.get("origin") and request.headers["origin"] not in ORIGINS and not trusted_request(request, mutation=True):
         from fastapi.responses import JSONResponse
         return JSONResponse({"detail":"Untrusted browser origin"},status_code=403)
-    return await call_next(request)
+    response = await call_next(request)
+    if request.url.path.startswith('/api/credentials/'):
+        response.headers['Cache-Control'] = 'no-store'
+    return response
 
 
 class ModeRequest(BaseModel):
